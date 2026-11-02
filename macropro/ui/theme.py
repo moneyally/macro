@@ -29,6 +29,11 @@ COLORS = {
     "amberDk":   "#A9731F",
     "chipOn":    "#1F7A4D",
     "chipOff":   "#8A867A",
+    # 사이드바(어두운 웜 톤 — Codex/ChatGPT 느낌)
+    "side":      "#2A2925",   # 사이드바 배경
+    "sideHover": "#3B3A35",   # 항목 호버
+    "sideInk":   "#CFCABB",   # 사이드바 글자(연한 크림)
+    "sideSub":   "#908B7E",   # 사이드바 보조
 }
 
 _UI = "Segoe UI" if _WIN else "Noto Sans CJK KR"

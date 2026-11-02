@@ -86,6 +86,84 @@ class Pill(tk.Canvas):
         self.create_text(self._cw / 2, self._h / 2, text=text, fill=self._fg, font=T.font(10, "bold"))
 
 
+class NavButton(tk.Frame):
+    """사이드바 메뉴 항목 — 왼쪽 정렬 아이콘+글자, 호버·활성 표시(Codex식)."""
+    def __init__(self, parent, text, command):
+        self._idle = T.COLORS["side"]
+        self._hoverbg = T.COLORS["sideHover"]
+        self._activebg = T.COLORS["accent"]
+        super().__init__(parent, bg=self._idle, cursor="hand2")
+        self.command = command
+        self._on = False
+        self.lbl = tk.Label(self, text=text, bg=self._idle, fg=T.COLORS["sideInk"],
+                            font=T.font(11, "bold"), anchor="w", padx=14, pady=10)
+        self.lbl.pack(fill="x")
+        for w in (self, self.lbl):
+            w.bind("<Button-1>", lambda e: self.command() if self.command else None)
+            w.bind("<Enter>", lambda e: self._paint(hover=True))
+            w.bind("<Leave>", lambda e: self._paint(hover=False))
+
+    def _paint(self, hover=False):
+        if self._on:
+            bg, fg = self._activebg, "white"
+        elif hover:
+            bg, fg = self._hoverbg, "white"
+        else:
+            bg, fg = self._idle, T.COLORS["sideInk"]
+        self.configure(bg=bg)
+        self.lbl.configure(bg=bg, fg=fg)
+
+    def set_active(self, on):
+        self._on = on
+        self._paint()
+
+
+class ScrollFrame(tk.Frame):
+    """세로 스크롤 되는 영역 — 내용은 `.body` 에 넣는다.
+
+    표준 패턴: Canvas + 내부 Frame(create_window) + Scrollbar + 마우스휠(플랫폼별).
+    ⚠️ Configure 핸들러는 **스크롤 영역만** 갱신하고 위젯 크기는 안 바꿈 → 무한 재귀 없음.
+    참고: VerticalScrolledFrame(gist JackTheEngineer) · ActiveState 580640.
+    """
+    def __init__(self, parent, bg=None):
+        bg = bg or T.COLORS["bg"]
+        super().__init__(parent, bg=bg)
+        self.canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self.vbar = tk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.vbar.set)
+        self.vbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.body = tk.Frame(self.canvas, bg=bg)
+        self._win = self.canvas.create_window((0, 0), window=self.body, anchor="nw")
+        self.body.bind("<Configure>", self._on_body)      # 내용 높이 바뀌면 스크롤영역만 갱신
+        self.canvas.bind("<Configure>", self._on_canvas)  # 창 너비 바뀌면 내부 폭만 맞춤
+        self.canvas.bind("<Enter>", self._wheel_on)        # 마우스 올라올 때만 휠 잡기
+        self.canvas.bind("<Leave>", self._wheel_off)
+
+    def _on_body(self, _e):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas(self, e):
+        self.canvas.itemconfigure(self._win, width=e.width)
+
+    def _wheel_on(self, _e):
+        self.canvas.bind_all("<MouseWheel>", self._wheel)      # Windows / macOS
+        self.canvas.bind_all("<Button-4>", self._wheel_lin)    # Linux 위로
+        self.canvas.bind_all("<Button-5>", self._wheel_lin)    # Linux 아래로
+
+    def _wheel_off(self, _e):
+        self.canvas.unbind_all("<MouseWheel>")
+        self.canvas.unbind_all("<Button-4>")
+        self.canvas.unbind_all("<Button-5>")
+
+    def _wheel(self, e):
+        if e.delta:
+            self.canvas.yview_scroll(int(-e.delta / 120), "units")
+
+    def _wheel_lin(self, e):
+        self.canvas.yview_scroll(-1 if getattr(e, "num", 5) == 4 else 1, "units")
+
+
 def entry(parent, textvar, width=10):
     """둥근 느낌의 입력칸 (얇은 경계)."""
     e = tk.Entry(parent, textvariable=textvar, width=width, relief="flat",

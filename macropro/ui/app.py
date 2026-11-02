@@ -20,10 +20,40 @@ from ..recorder import STOP_KEYS, Recorder
 from . import theme as T
 from . import widgets as W
 from .editor import Editor
-from .history import History
 
 MODE_EDIT, MODE_RUN = "edit", "run"
 CTRL_KEYS = {keyboard.Key.f8, keyboard.Key.f9, keyboard.Key.f10, keyboard.Key.f12}
+
+HELP_TEXT = """⚡ 매크로 PRO — 빠른 사용법
+
+● 3줄 요약
+ 1) 왼쪽 📋 매크로 → ＋ 추가로 매크로 만들기
+ 2) ✎ 편집에서 동작 쌓기(클릭·문구·붙여넣기…) 또는 ● 기록으로 직접 녹화
+ 3) 그 매크로에 '실행 단축키'(예 f1) 적고 → F12로 실행 모드 → f1 누르면 돎
+
+● 단축키
+ F8 좌표 찍기 · F9 녹화 시작/정지 · F10 정지 · F12 실행↔편집 전환
+
+● 동작 종류
+ 🖱 클릭 / ✎ 문구 입력 / 📋 붙여넣기(긴 글·빠름) / 🔑 단축키 / ➡ 이동
+ ⏱ 대기 / 🖲 스크롤 / 🖼 이미지 보이면 클릭 / ⏳ 이미지 뜰 때까지
+ 🔀 이미지 조건(없으면 N개 건너뛰기) / 🪟 창 조절(제목으로 띄우기·이동·크기)
+
+● 여러 방에 한 번에 (✎ 편집 → 📡 멀티 타겟)
+ 방 위치를 F8로 찍거나 '창 제목'으로 등록 → 공통 문구 → 한 번에 모든 방에
+ 클릭→입력→엔터. 창이 겹쳐 있으면 '창 제목'이 더 안정적.
+
+● 선택 매크로 설정
+ 반복(0=무한) · 배속 · 🔗 끝나면 다음 매크로(체인) · ⏰ 매일 자동 실행(HH:MM)
+
+● 전역 설정
+ 실행 주기 · 타이밍 랜덤 · 🎲 동작마다 랜덤 대기(사람처럼) · 한/영 감지 ·
+ 종료 시 키 떼기 / 마우스 복구
+
+● 저장
+ 작업은 자동 저장(꺼도 안 날아감). 💾 저장으로 .m 파일 따로 보관도 가능.
+
+⚠️ 매크로 탐지하는 게임·프로그램엔 쓰지 마세요(계정 정지 위험)."""
 
 
 class App:
@@ -68,28 +98,91 @@ class App:
     def _style(self):
         self.root.configure(bg=T.COLORS["bg"])
 
-    # ── 레이아웃 ──────────────────────────────────────────
+    # ── 레이아웃 (사이드바 + 메인, Codex/ChatGPT 식 app-shell) ──
     def _build(self):
         r = self.root
         r.title("⚡ 매크로 PRO")
-        r.geometry("600x680")
-        r.minsize(560, 640)
+        r.geometry("820x600")
+        r.minsize(720, 460)
+        # grid: 사이드바(col0 고정) + 메인(col1 늘어남) — CustomTkinter 공식 예제 구조
+        r.grid_columnconfigure(1, weight=1)
+        r.grid_rowconfigure(0, weight=1)
 
-        head = tk.Frame(r, bg=T.COLORS["bg"])
-        head.pack(fill="x", padx=18, pady=(14, 4))
-        tk.Label(head, text="⚡ 매크로 PRO", bg=T.COLORS["bg"], fg=T.COLORS["ink"],
-                 font=T.font(17, "bold")).pack(side="left")
-        self.pill = W.Pill(head, "편집 모드", T.COLORS["slate"], width=150, height=30)
-        self.pill.pack(side="right")
-        tk.Label(r, textvariable=self.mousev, bg=T.COLORS["bg"], fg=T.COLORS["sub"],
-                 font=T.font(9)).pack(anchor="e", padx=20)
+        self._build_sidebar(r)
 
-        # 매크로 목록
-        listcard = W.Card(r, "📋 매크로 목록  (F12 = 실행↔편집 전환)")
+        # ── 메인 ──
+        main = tk.Frame(r, bg=T.COLORS["bg"])
+        main.grid(row=0, column=1, sticky="nsew")
+        topbar = tk.Frame(main, bg=T.COLORS["bg"])
+        topbar.pack(side="top", fill="x", padx=22, pady=(16, 6))
+        self.page_title = tk.StringVar(value="📋  매크로")
+        tk.Label(topbar, textvariable=self.page_title, bg=T.COLORS["bg"], fg=T.COLORS["ink"],
+                 font=T.font(15, "bold")).pack(side="left")
+        tk.Label(topbar, textvariable=self.mousev, bg=T.COLORS["bg"], fg=T.COLORS["sub"],
+                 font=T.font(9)).pack(side="right")
+
+        self.statusbar = tk.Label(main, textvariable=self.status, bg=T.COLORS["bg"], fg=T.COLORS["accentDk"],
+                                  font=T.font(10, "bold"), anchor="w")
+        self.statusbar.pack(side="bottom", fill="x", padx=22, pady=(0, 10))
+
+        self.main_body = tk.Frame(main, bg=T.COLORS["bg"])
+        self.main_body.pack(side="top", fill="both", expand=True)
+
+        self.pages = {}
+        self._build_page_macros()
+        self._build_page_global()
+        self._build_page_history()
+        self._build_page_help()
+        self.show_page("macros")
+
+    def _build_sidebar(self, r):
+        side = tk.Frame(r, bg=T.COLORS["side"], width=200)
+        side.grid(row=0, column=0, sticky="nsew")
+        side.grid_propagate(False)
+        side.pack_propagate(False)
+        tk.Label(side, text="⚡  매크로 PRO", bg=T.COLORS["side"], fg=T.COLORS["sideInk"],
+                 font=T.font(13, "bold")).pack(anchor="w", padx=18, pady=(18, 2))
+        pf = tk.Frame(side, bg=T.COLORS["side"])
+        pf.pack(anchor="w", padx=16, pady=(2, 14))
+        self.pill = W.Pill(pf, "편집 모드", T.COLORS["slate"], width=150, height=28)
+        self.pill.pack(anchor="w")
+
+        self._nav = {}
+        for key, text in [("macros", "📋   매크로"), ("global", "⚙   전역 설정"),
+                          ("history", "📜   실행 기록"), ("help", "❓   도움말")]:
+            nb = W.NavButton(side, text, lambda k=key: self.show_page(k))
+            nb.pack(fill="x", padx=10, pady=1)
+            self._nav[key] = nb
+
+        tk.Frame(side, bg=T.COLORS["side"]).pack(fill="both", expand=True)   # 아래로 밀기(spacer)
+
+        for row in (
+            [("💾 저장", self.save_file, "accent"), ("📂 열기", self.load_file, "slate")],
+            [("■ 정지", self.stop_play, "red"), ("종료", self._quit, "slate")],
+        ):
+            bar = tk.Frame(side, bg=T.COLORS["side"])
+            bar.pack(fill="x", padx=10, pady=(0, 6))
+            for txt, cmd, ck in row:
+                W.RoundButton(bar, txt, cmd, bg=T.COLORS[ck], hover=T.COLORS[ck + "Dk"],
+                              width=84, height=34, radius=10, font=T.font(9, "bold")).pack(side="left", expand=True, fill="x", padx=2)
+
+    # ── 페이지들 ──────────────────────────────────────────
+    def _page_frame(self, key):
+        f = tk.Frame(self.main_body, bg=T.COLORS["bg"])
+        self.pages[key] = f
+        return f
+
+    def _build_page_macros(self):
+        f = self._page_frame("macros")
+        sc = W.ScrollFrame(f)
+        sc.pack(fill="both", expand=True)
+        host = sc.body
+
+        listcard = W.Card(host, "📋 매크로 목록  (F12 = 실행↔편집 전환)")
         listcard.pack(fill="x", padx=14, pady=(4, 0))
         inner = tk.Frame(listcard.body, bg=T.COLORS["surface"])
         inner.pack(fill="both", expand=True)
-        self.lb = tk.Listbox(inner, height=6, font=T.font(11), bg="white", fg=T.COLORS["ink"],
+        self.lb = tk.Listbox(inner, height=7, font=T.font(11), bg="white", fg=T.COLORS["ink"],
                              selectbackground=T.COLORS["accentSoft"], selectforeground=T.COLORS["ink"],
                              relief="flat", highlightthickness=0, activestyle="none")
         self.lb.pack(side="left", fill="both", expand=True)
@@ -108,9 +201,8 @@ class App:
             if "기록" in txt:
                 self._recbtn = b
 
-        # 선택 매크로 설정
-        mc = W.Card(r, "🎛 선택 매크로")
-        mc.pack(fill="x", padx=14, pady=(10, 0))
+        mc = W.Card(host, "🎛 선택 매크로")
+        mc.pack(fill="x", padx=14, pady=(10, 12))
         b = mc.body
         self.m_hot = tk.StringVar()
         self.m_loop = tk.StringVar(value="1")
@@ -132,9 +224,13 @@ class App:
         for v in (self.m_hot, self.m_loop, self.m_speed, self.m_chain, self.m_sched):
             v.trace_add("write", lambda *a: self._save_sel())
 
-        # 전역 설정
-        gc = W.Card(r, "⚙ 전역 설정")
-        gc.pack(fill="x", padx=14, pady=(10, 0))
+    def _build_page_global(self):
+        f = self._page_frame("global")
+        sc = W.ScrollFrame(f)
+        sc.pack(fill="both", expand=True)
+        host = sc.body
+        gc = W.Card(host, "⚙ 전역 설정 (모든 매크로 공통)")
+        gc.pack(fill="x", padx=14, pady=(4, 12))
         b = gc.body
         self.cycle = tk.StringVar(value=str(self.set.cycle_ms))
         self.jit = tk.StringVar(value=str(self.set.jitter_pct))
@@ -162,23 +258,57 @@ class App:
         for v in (self.cycle, self.jit, self.rmin, self.rmax):
             v.trace_add("write", lambda *a: self._save_global())
 
-        # 파일 + 종료
-        fc = tk.Frame(r, bg=T.COLORS["bg"])
-        fc.pack(fill="x", padx=14, pady=12)
-        W.RoundButton(fc, "💾 저장", self.save_file, bg=T.COLORS["accent"], hover=T.COLORS["accentDk"],
-                      width=100, height=38).pack(side="left", padx=4)
-        W.RoundButton(fc, "📂 불러오기", self.load_file, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
-                      width=104, height=38).pack(side="left", padx=4)
-        W.RoundButton(fc, "📜 기록", self.show_history, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
-                      width=84, height=38).pack(side="left", padx=4)
-        W.RoundButton(fc, "■ 정지", self.stop_play, bg=T.COLORS["red"], hover=T.COLORS["redDk"],
-                      width=84, height=38).pack(side="left", padx=4)
-        W.RoundButton(fc, "종료", self._quit, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
-                      width=80, height=38).pack(side="right", padx=4)
+    def _build_page_history(self):
+        f = self._page_frame("history")
+        row = tk.Frame(f, bg=T.COLORS["bg"])
+        row.pack(side="bottom", fill="x", padx=14, pady=(0, 10))
+        W.RoundButton(row, "🔄 새로고침", self._refresh_history, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
+                      width=104, height=34, radius=10, font=T.font(9, "bold")).pack(side="left", padx=3)
+        W.RoundButton(row, "🗑 기록 비우기", self._clear_history, bg=T.COLORS["red"], hover=T.COLORS["redDk"],
+                      width=118, height=34, radius=10, font=T.font(9, "bold")).pack(side="left", padx=3)
+        card = W.Card(f, "📜 언제 어떤 매크로를 몇 번 돌렸나")
+        card.pack(side="top", fill="both", expand=True, padx=14, pady=(4, 6))
+        self.hist_lb = tk.Listbox(card.body, font=T.font(10), bg="white", fg=T.COLORS["ink"],
+                                  selectbackground=T.COLORS["accentSoft"], selectforeground=T.COLORS["ink"],
+                                  relief="flat", highlightthickness=0, activestyle="none")
+        self.hist_lb.pack(fill="both", expand=True)
 
-        self.statusbar = tk.Label(r, textvariable=self.status, bg=T.COLORS["bg"], fg=T.COLORS["accentDk"],
-                                  font=T.font(10, "bold"), anchor="w")
-        self.statusbar.pack(fill="x", padx=20, pady=(0, 8))
+    def _build_page_help(self):
+        f = self._page_frame("help")
+        card = W.Card(f)
+        card.pack(fill="both", expand=True, padx=14, pady=(4, 8))
+        txt = tk.Text(card.body, wrap="word", bg="white", fg=T.COLORS["ink"], relief="flat",
+                      highlightthickness=0, font=T.font(10), padx=12, pady=10)
+        txt.pack(fill="both", expand=True)
+        txt.insert("1.0", HELP_TEXT)
+        txt.configure(state="disabled")
+
+    def show_page(self, key):
+        for fr in self.pages.values():
+            fr.pack_forget()
+        self.pages[key].pack(fill="both", expand=True)
+        titles = {"macros": "📋  매크로", "global": "⚙  전역 설정",
+                  "history": "📜  실행 기록", "help": "❓  도움말"}
+        self.page_title.set(titles.get(key, ""))
+        for k, nb in self._nav.items():
+            nb.set_active(k == key)
+        if key == "history":
+            self._refresh_history()
+
+    def _refresh_history(self):
+        self.hist_lb.delete(0, "end")
+        rows = store.recent_runs(200)
+        if not rows:
+            self.hist_lb.insert("end", "  (아직 실행 기록 없음)")
+            return
+        for name, loops, ts in rows:
+            when = time.strftime("%m-%d %H:%M:%S", time.localtime(ts))
+            loop = "∞회" if loops == 0 else f"{loops}회"
+            self.hist_lb.insert("end", f"  {when}    {name}    ·{loop}")
+
+    def _clear_history(self):
+        store.clear_runs()
+        self._refresh_history()
 
     # ── 매크로 목록 ───────────────────────────────────────
     def refresh_macros(self):
@@ -417,9 +547,6 @@ class App:
             if nxt and nxt.name not in self._chain_seen and nxt.actions:
                 self._chain_seen.add(nxt.name)
                 self.root.after(120, lambda: self._play(nxt, reset_chain=False))
-
-    def show_history(self):
-        History(self)
 
     # ── 모드 토글 (F12) ───────────────────────────────────
     def toggle_mode(self):
