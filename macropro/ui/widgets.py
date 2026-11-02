@@ -28,7 +28,7 @@ class RoundButton(tk.Canvas):
         self._bg = bg or T.COLORS["accent"]
         self._hover = hover or T.COLORS["accentDk"]
         self._fg = fg
-        self._w, self._h, self._r = width, height, radius
+        self._cw, self._h, self._r = width, height, radius   # _w 는 tkinter 예약(위젯 이름)이라 _cw 사용
         self._font = font or T.font(10, "bold" if bold else "normal", kr)
         self._text = text
         self._draw(self._bg)
@@ -39,9 +39,9 @@ class RoundButton(tk.Canvas):
 
     def _draw(self, color):
         self.delete("all")
-        pts = round_rect_points(2, 2, self._w - 2, self._h - 2, self._r)
+        pts = round_rect_points(2, 2, self._cw - 2, self._h - 2, self._r)
         self.create_polygon(pts, smooth=True, splinesteps=36, fill=color, outline=color)
-        self.create_text(self._w / 2, self._h / 2, text=self._text, fill=self._fg, font=self._font)
+        self.create_text(self._cw / 2, self._h / 2, text=self._text, fill=self._fg, font=self._font)
 
     def _click(self, _e):
         if self.command:
@@ -93,15 +93,15 @@ class Pill(tk.Canvas):
     def __init__(self, parent, text="", bg=None, fg="white", width=180, height=30):
         pbg = parent["bg"] if "bg" in parent.keys() else T.COLORS["bg"]
         super().__init__(parent, width=width, height=height, bg=pbg, highlightthickness=0, bd=0)
-        self._w, self._h = width, height
+        self._cw, self._h = width, height
         self._fg = fg
         self.set(text, bg or T.COLORS["green"])
 
     def set(self, text, bg):
         self.delete("all")
-        pts = round_rect_points(2, 2, self._w - 2, self._h - 2, self._h / 2)
+        pts = round_rect_points(2, 2, self._cw - 2, self._h - 2, self._h / 2)
         self.create_polygon(pts, smooth=True, splinesteps=24, fill=bg, outline=bg)
-        self.create_text(self._w / 2, self._h / 2, text=text, fill=self._fg, font=T.font(10, "bold"))
+        self.create_text(self._cw / 2, self._h / 2, text=text, fill=self._fg, font=T.font(10, "bold"))
 
 
 def entry(parent, textvar, width=10):
