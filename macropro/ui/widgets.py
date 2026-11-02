@@ -58,34 +58,16 @@ class RoundButton(tk.Canvas):
 
 
 class Card(tk.Frame):
-    """둥근 느낌의 카드 (경계선 + 패딩). tk 는 진짜 라운드 프레임이 없어 미세 라운드로 흉내."""
+    """깔끔한 카드 — 표면색 + 얇은 경계선 + 패딩 (Configure 재귀 없음, 안전)."""
     def __init__(self, parent, title=None, pad=14):
-        super().__init__(parent, bg=T.COLORS["bg"])
-        self._canvas = tk.Canvas(self, bg=T.COLORS["bg"], highlightthickness=0, bd=0)
-        self._canvas.pack(fill="both", expand=True)
-        self.inner = tk.Frame(self._canvas, bg=T.COLORS["surface"])
-        self._win = self._canvas.create_window(0, 0, anchor="nw", window=self.inner)
-        self._canvas.bind("<Configure>", self._resize)
-        self.inner.bind("<Configure>", self._resize)
-        self._pad = pad
-        self._title = title
+        super().__init__(parent, bg=T.COLORS["surface"],
+                         highlightbackground=T.COLORS["line"], highlightcolor=T.COLORS["line"],
+                         highlightthickness=1, bd=0)
         if title:
-            tk.Label(self.inner, text=title, bg=T.COLORS["surface"], fg=T.COLORS["ink"],
+            tk.Label(self, text=title, bg=T.COLORS["surface"], fg=T.COLORS["ink"],
                      font=T.font(11, "bold")).pack(anchor="w", padx=pad, pady=(pad, 4))
-        self.body = tk.Frame(self.inner, bg=T.COLORS["surface"])
+        self.body = tk.Frame(self, bg=T.COLORS["surface"])
         self.body.pack(fill="both", expand=True, padx=pad, pady=(0, pad))
-
-    def _resize(self, _e=None):
-        w = self._canvas.winfo_width()
-        self.inner.configure(width=w)
-        self._canvas.itemconfig(self._win, width=w)
-        self._canvas.configure(height=self.inner.winfo_reqheight())
-        self._canvas.delete("bgpanel")
-        h = self.inner.winfo_reqheight()
-        pts = round_rect_points(1, 1, w - 1, h - 1, 16)
-        self._canvas.create_polygon(pts, smooth=True, splinesteps=36,
-                                    fill=T.COLORS["surface"], outline=T.COLORS["line"], tags="bgpanel")
-        self._canvas.tag_lower("bgpanel")
 
 
 class Pill(tk.Canvas):

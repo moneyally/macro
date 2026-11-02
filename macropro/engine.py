@@ -29,11 +29,11 @@ class Engine:
     # ── 저수준 (녹화 재생용) ──────────────────────────────
     def key_down(self, key):
         self.kb.press(key)
-        self._down_keys.add(repr(key))
+        self._down_keys.add(key)          # 실제 키 객체(repr 아님) — 떼려면 객체가 필요
 
     def key_up(self, key):
         self.kb.release(key)
-        self._down_keys.discard(repr(key))
+        self._down_keys.discard(key)
 
     def btn_down(self, btn):
         self.mc.press(btn)
@@ -48,6 +48,7 @@ class Engine:
 
     # ── 고수준 (조립 동작용) ──────────────────────────────
     def click(self, x, y, button="left", count=1, jitter=0):
+        jitter = abs(int(jitter))          # 음수 들어와도 randint 빈 범위로 안 터지게
         if jitter:
             x += random.randint(-jitter, jitter)
             y += random.randint(-jitter, jitter)
@@ -104,16 +105,51 @@ class Engine:
             pyautogui.FAILSAFE = False
         except Exception:
             raise RuntimeError("이미지 클릭은  pip install pyautogui opencv-python  필요")
-        try:
-            loc = pyautogui.locateCenterOnScreen(path, confidence=confidence)
-        except TypeError:
-            loc = pyautogui.locateCenterOnScreen(path)
+        loc = self.locate_image(path, confidence)
         if loc is None:
             return False
         self.click(int(loc[0]), int(loc[1]), button)
         return True
 
+    def locate_image(self, path, confidence=0.8):
+        """화면에서 이미지를 찾아 (x, y) 반환, 없으면 None (예외 안 터뜨림)."""
+        try:
+            import pyautogui
+            pyautogui.FAILSAFE = False
+        except Exception:
+            return None
+        try:
+            return pyautogui.locateCenterOnScreen(path, confidence=confidence)
+        except (TypeError, NotImplementedError):   # opencv 없으면 confidence 거부(옛:TypeError, 요즘:NotImplementedError)
+            try:
+                return pyautogui.locateCenterOnScreen(path)
+            except Exception:
+                return None
+        except Exception:          # 요즘 pyscreeze 는 못 찾으면 ImageNotFoundException 던짐
+            return None
+
+    # ── 붙여넣기 (긴 글은 타이핑 대신 복사→Ctrl+V: 빠르고 안 깨짐) ──
+    def paste(self, text):
+        if not text:
+            return
+        from .clipboard import set_clipboard
+        if set_clipboard(text):
+            hrsleep(0.03)
+            self.hotkey("ctrl+v")
+        else:
+            self.type_text(text, 0)      # 클립보드 실패하면 그냥 타이핑
+
+    # ── 창 조절 (제목 일부로 창 찾기) ─────────────────────
+    def window_op(self, a):
+        try:
+            from . import winctl
+        except Exception:
+            return False
+        return winctl.do(a.get("op", "activate"), a.get("title", ""),
+                         a.get("x"), a.get("y"), a.get("w"), a.get("h"))
+
     # ── 동작 1개 실행 ─────────────────────────────────────
+    # 반환값: 보통 None. "if_image" 가 조건에 따라 '다음 N개 건너뛰기'를 int 로 돌려줄 수 있음.
     def run_action(self, a, stop=None):
         t = a["type"]
         if t == "move":
@@ -138,7 +174,70 @@ class Engine:
             self.hotkey(a["combo"])
         elif t == "image":
             self.image_click(a["path"], a.get("confidence", 0.8), a.get("button", "left"))
+        elif t == "paste":                       # 📋 붙여넣기
+            self.paste(a.get("text", ""))
+        elif t == "window":                      # 🪟 창 조절
+            self.window_op(a)
+        elif t == "wait_image":                  # ⏳ 이미지 뜰 때까지 대기(최대 timeout 초)
+            self._wait_image(a, stop)
+        elif t == "if_image":                    # 🔀 이미지 조건: 없으면 다음 N개 건너뛰기
+            found = self.locate_image(a["path"], a.get("confidence", 0.8)) is not None
+            want = a.get("when", "found")        # found=보이면 진행 / notfound=안 보이면 진행
+            ok = found if want == "found" else (not found)
+            if not ok:
+                return int(a.get("skip", 1))     # 조건 불만족 → 다음 N개 건너뛰기
+        elif t == "broadcast":                   # 📡 여러 방: 각 방 클릭 → 문구 입력 → 엔터
+            self._broadcast(a, stop)
         # "wait" 는 delay 로 이미 기다렸으니 할 일 없음
+
+    def _wait_image(self, a, stop=None):
+        import time
+        path = a["path"]
+        conf = a.get("confidence", 0.8)
+        timeout = max(0.0, float(a.get("timeout", 10)))
+        btn = a.get("button", "")
+        end = time.perf_counter() + timeout
+        while time.perf_counter() < end:
+            if stop and stop.is_set():
+                return
+            loc = self.locate_image(path, conf)
+            if loc is not None:
+                if btn:                          # 뜨면 클릭까지 할지(선택)
+                    self.click(int(loc[0]), int(loc[1]), btn)
+                return
+            hrsleep(0.4)
+
+    def _broadcast(self, a, stop=None):
+        targets = a.get("targets", [])
+        text = a.get("text", "")
+        cps = a.get("cps", 0)
+        gap = max(0, a.get("gap_ms", 150)) / 1000.0
+        do_enter = a.get("enter", True)
+        pre = max(0, a.get("focus_ms", 120)) / 1000.0   # 클릭 후 입력 전 대기(창 포커스)
+        for pt in targets:
+            if stop and stop.is_set():
+                return
+            if isinstance(pt, dict) and pt.get("win"):     # 창 제목으로 그 방 띄우기
+                self.window_op({"op": "activate", "title": pt["win"]})
+                hrsleep(pre)
+            else:
+                try:
+                    x, y = pt
+                except Exception:
+                    continue
+                self.click(int(x), int(y), "left", 1, 0)   # 그 방 입력칸 클릭
+                hrsleep(pre)
+            if stop and stop.is_set():      # 정지 누르면 엔터·입력 더 안 나가게
+                return
+            if text:
+                self.type_text(text, cps, stop)
+            if stop and stop.is_set():
+                return
+            if do_enter:
+                self.key_down(keyboard.Key.enter)
+                hrsleep(0.02)
+                self.key_up(keyboard.Key.enter)
+            hrsleep(gap)
 
     # ── 안전: 눌린 키/버튼 모두 떼기 ──────────────────────
     def release_all(self):
@@ -148,10 +247,16 @@ class Engine:
             except Exception:
                 pass
         self._down_btns.clear()
-        # 흔한 수식키는 명시적으로도 떼 줌 (추적 누락 대비)
-        for k in (keyboard.Key.ctrl, keyboard.Key.alt, keyboard.Key.shift, keyboard.Key.cmd):
+        # 추적 중인 눌린 키를 실제로 떼 줌 (게임서 키 누른 채 정지 → 키 안 떼지던 버그)
+        for k in list(self._down_keys):
             try:
                 self.kb.release(k)
             except Exception:
                 pass
         self._down_keys.clear()
+        # 흔한 수식키는 혹시 몰라 한 번 더 (추적 누락 대비)
+        for k in (keyboard.Key.ctrl, keyboard.Key.alt, keyboard.Key.shift, keyboard.Key.cmd):
+            try:
+                self.kb.release(k)
+            except Exception:
+                pass

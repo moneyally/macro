@@ -34,23 +34,29 @@ class Player:
         self._stop.set()
 
     def play(self, actions, *, loops=1, speed=1.0, jitter=0.0, cycle=0.0,
-             ime_lock=False, release_all=True, restore_mouse=False):
+             ime_lock=False, release_all=True, restore_mouse=False,
+             rand_min=0.0, rand_max=0.0):
         if self.playing or not actions:
             return False
         self._stop.clear()
+        jitter = min(1.0, max(0.0, jitter))          # 100%↑ 면 딜레이 음수 되던 것 막기
+        rand_min = max(0.0, rand_min)
+        rand_max = max(rand_min, rand_max)
         self._thread = threading.Thread(
             target=self._run,
-            args=(list(actions), loops, max(0.05, speed), max(0.0, jitter), max(0.0, cycle),
-                  ime_lock, release_all, restore_mouse),
+            args=(list(actions), loops, max(0.05, speed), jitter, max(0.0, cycle),
+                  ime_lock, release_all, restore_mouse, rand_min, rand_max),
             daemon=True)
         self._thread.start()
         return True
 
     def _status(self, t):
-        if self.on_status:
-            self.on_status(t)
+        cb = self.on_status          # 지역으로 한 번만 읽기 (종료 중 null 되는 경쟁 방지)
+        if cb:
+            cb(t)
 
-    def _run(self, actions, loops, speed, jitter, cycle, ime_lock, release_all, restore_mouse):
+    def _run(self, actions, loops, speed, jitter, cycle, ime_lock, release_all, restore_mouse,
+             rand_min=0.0, rand_max=0.0):
         start_pos = self.eng.get_pos()
         prev_hangul = None
         if ime_lock:
@@ -58,21 +64,29 @@ class Player:
             ime.set_hangul(False)        # 영문으로 고정
         sched = Scheduler()
         n = 0
+        na = len(actions)
         try:
             while not self._stop.is_set():
                 sched.start()
                 offset = 0.0
-                for a in actions:
+                i = 0
+                while i < na:
                     if self._stop.is_set():
                         break
+                    a = actions[i]
                     dt = a.get("delay", 0.0) / speed
                     if jitter and dt:
                         dt *= random.uniform(1 - jitter, 1 + jitter)
+                    if rand_max > 0:
+                        dt += random.uniform(rand_min, rand_max)   # 동작마다 랜덤 대기(더 사람같이)
                     if cycle and dt < cycle:
                         dt = cycle              # 실행 주기보다 짧으면 주기로 맞춤
                     offset += dt
                     sched.wait_until(offset)
-                    self.eng.run_action(a, self._stop)
+                    skip = self.eng.run_action(a, self._stop)
+                    if isinstance(skip, int) and skip > 0:         # 이미지 조건: 다음 N개 건너뛰기
+                        i += skip
+                    i += 1
                 n += 1
                 self._status(f"▶ 실행 {n}회" + ("" if loops == 0 else f"/{loops}"))
                 if loops and n >= loops:
@@ -89,5 +103,6 @@ class Player:
                     pass
             if ime_lock and prev_hangul:
                 ime.set_hangul(True)         # 원래 한글이었으면 되돌림
-            if self.on_done:
-                self.on_done(n)
+            cb = self.on_done                # 지역으로 한 번만 (종료 중 null 경쟁 방지)
+            if cb:
+                cb(n)

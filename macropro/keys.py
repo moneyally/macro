@@ -29,6 +29,10 @@ for _i in range(1, 25):
         NAMED[f"f{_i}"] = _k
 
 BUTTONS = {"left": mouse.Button.left, "right": mouse.Button.right, "middle": mouse.Button.middle}
+for _bn in ("x1", "x2", "button8", "button9"):   # 마우스 옆버튼(있으면)
+    _bt = getattr(mouse.Button, _bn, None)
+    if _bt is not None:
+        BUTTONS[_bn] = _bt
 
 
 def ser_key(key):

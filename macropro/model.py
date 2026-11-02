@@ -7,26 +7,32 @@ import json
 
 
 class Macro:
-    def __init__(self, name="Macro", actions=None, hotkey="", loops=1, speed=1.0):
+    def __init__(self, name="Macro", actions=None, hotkey="", loops=1, speed=1.0,
+                 chain="", schedule=""):
         self.name = name
         self.actions = actions or []     # [{type, delay, ...}]
         self.hotkey = hotkey             # 이 매크로 실행 단축키 (예: 'f1')
         self.loops = loops               # 0 = 무한
         self.speed = speed
+        self.chain = chain               # 끝나면 이어서 실행할 매크로 이름 (체인)
+        self.schedule = schedule         # 매일 자동 실행 시각 'HH:MM' (빈값=안 함)
 
     def to_dict(self):
         return {"name": self.name, "actions": self.actions,
-                "hotkey": self.hotkey, "loops": self.loops, "speed": self.speed}
+                "hotkey": self.hotkey, "loops": self.loops, "speed": self.speed,
+                "chain": self.chain, "schedule": self.schedule}
 
     @classmethod
     def from_dict(cls, d):
         return cls(d.get("name", "Macro"), d.get("actions", []),
-                   d.get("hotkey", ""), int(d.get("loops", 1)), float(d.get("speed", 1.0)))
+                   d.get("hotkey", ""), int(d.get("loops", 1)), float(d.get("speed", 1.0)),
+                   d.get("chain", ""), d.get("schedule", ""))
 
     def copy(self):
         m = Macro.from_dict(self.to_dict())
         m.name = self.name + " 복사"
-        m.hotkey = ""   # 단축키 중복 방지
+        m.hotkey = ""       # 단축키 중복 방지
+        m.schedule = ""     # 예약 중복 방지
         return m
 
 
@@ -40,6 +46,8 @@ class MacroSet:
         self.restore_mouse = False  # 종료 시 마우스 위치 복구
         self.jitter_pct = 0         # 타이밍 랜덤 ±%
         self.record_moves = True
+        self.rand_min_ms = 0        # 동작마다 추가 랜덤 대기 최소(ms) — 더 사람같이
+        self.rand_max_ms = 0        # 동작마다 추가 랜덤 대기 최대(ms)
 
     def add(self, macro=None):
         macro = macro or Macro(name=self._next_name())
@@ -59,6 +67,7 @@ class MacroSet:
             "cycle_ms": self.cycle_ms, "ime_detect": self.ime_detect,
             "release_on_stop": self.release_on_stop, "restore_mouse": self.restore_mouse,
             "jitter_pct": self.jitter_pct, "record_moves": self.record_moves,
+            "rand_min_ms": self.rand_min_ms, "rand_max_ms": self.rand_max_ms,
             "macros": [m.to_dict() for m in self.macros],
         }
 
@@ -71,6 +80,8 @@ class MacroSet:
         s.restore_mouse = bool(d.get("restore_mouse", False))
         s.jitter_pct = int(d.get("jitter_pct", 0))
         s.record_moves = bool(d.get("record_moves", True))
+        s.rand_min_ms = int(d.get("rand_min_ms", 0))
+        s.rand_max_ms = int(d.get("rand_max_ms", 0))
         s.macros = [Macro.from_dict(x) for x in d.get("macros", [])]
         return s
 
@@ -105,10 +116,29 @@ def action_label(a):
         return f"🖱  클릭 ({a['x']},{a['y']}) {a.get('button','left')} ×{a.get('count',1)}{j}{gap}"
     if t == "type":
         return f"✎  문구 \"{a['text'][:22]}\" ({'즉시' if not a.get('cps') else str(a['cps'])+'자/초'}){gap}"
+    if t == "paste":
+        return f"📋  붙여넣기 \"{a.get('text','')[:22]}\"{gap}"
     if t == "hotkey":
         return f"🔑  단축키 {a['combo']}{gap}"
+    if t == "window":
+        op = a.get("op", "activate")
+        xy = ""
+        if op == "move":
+            xy = f" → ({a.get('x')},{a.get('y')})"
+        elif op == "resize":
+            xy = f" → {a.get('w')}×{a.get('h')}"
+        return f"🪟  창 \"{a.get('title','')[:16]}\" {op}{xy}{gap}"
+    if t == "wait_image":
+        return f"⏳  이미지 뜰 때까지 {a['path']} (≤{int(a.get('timeout',10))}초){gap}"
+    if t == "if_image":
+        cond = "있으면 진행" if a.get("when", "found") == "found" else "없으면 진행"
+        return f"🔀  이미지 {cond}, 아니면 {a.get('skip',1)}개 건너뛰기  {a['path']}"
     if t == "wait":
         return f"⏱  대기 {int(a.get('delay',0)*1000)}ms"
     if t == "image":
         return f"🖼  이미지 클릭 {a['path']}{gap}"
+    if t == "broadcast":
+        n = len(a.get("targets", []))
+        en = " +엔터" if a.get("enter", True) else ""
+        return f"📡  여러 방 {n}곳 전송  \"{a.get('text','')[:18]}\"{en}"
     return str(a)

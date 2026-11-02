@@ -10,17 +10,25 @@ from tkinter import messagebox, ttk
 from .. import model
 from . import theme as T
 from . import widgets as W
+from .broadcast import Broadcast
 
-TYPES = [("click", "🖱 클릭"), ("type", "✎ 문구 입력"), ("hotkey", "🔑 단축키"),
-         ("move", "➡ 이동"), ("wait", "⏱ 대기"), ("scroll", "🖲 스크롤"), ("image", "🖼 이미지 클릭")]
+TYPES = [("click", "🖱 클릭"), ("type", "✎ 문구 입력"), ("paste", "📋 붙여넣기(빠름)"),
+         ("hotkey", "🔑 단축키"), ("move", "➡ 이동"), ("wait", "⏱ 대기"),
+         ("scroll", "🖲 스크롤"), ("image", "🖼 이미지 보이면 클릭"),
+         ("wait_image", "⏳ 이미지 뜰 때까지"), ("if_image", "🔀 이미지 조건"),
+         ("window", "🪟 창 조절")]
 LABELS = {
     "click": ("좌표 x,y", "버튼 left/right/middle", "횟수 (,흔들기px)"),
     "type": ("문구 (타이핑할 글)", "초당 글자수(0=즉시)", "앞 대기(ms)"),
+    "paste": ("붙여넣을 문구 (복사→Ctrl+V)", "앞 대기(ms)", "—"),
     "hotkey": ("조합 ctrl+c / alt+tab", "앞 대기(ms)", "—"),
     "move": ("좌표 x,y", "걸리는 시간(초,0=순간)", "앞 대기(ms)"),
     "wait": ("대기 밀리초(ms)", "—", "—"),
     "scroll": ("양(+위/-아래)", "앞 대기(ms)", "—"),
     "image": ("이미지 경로(.png)", "정확도 0~1", "버튼 left/right"),
+    "wait_image": ("이미지 경로(.png)", "정확도 0~1", "최대 대기(초)"),
+    "if_image": ("이미지 경로(.png)", "있을때 found / 없을때 notfound", "조건 안 맞으면 건너뛸 동작 수"),
+    "window": ("창 제목(일부만)", "activate/min/max/close/move/resize", "move=x,y  resize=w,h"),
 }
 
 
@@ -46,13 +54,22 @@ class Editor(tk.Toplevel):
         self._refresh()
 
         row = tk.Frame(self, bg=T.COLORS["bg"])
-        row.pack(fill="x", padx=14, pady=8)
+        row.pack(fill="x", padx=14, pady=(8, 2))
         for txt, cmd, col, hov in [("▲ 위", lambda: self._move(-1), T.COLORS["slate"], T.COLORS["slateDk"]),
                                    ("▼ 아래", lambda: self._move(1), T.COLORS["slate"], T.COLORS["slateDk"]),
                                    ("🗑 삭제", self._del, T.COLORS["red"], T.COLORS["redDk"]),
                                    ("● 이 매크로에 녹화", self._record, T.COLORS["accent"], T.COLORS["accentDk"])]:
             W.RoundButton(row, txt, cmd, bg=col, hover=hov, width=120 if "녹화" in txt else 78,
                           height=34, radius=11, font=T.font(9, "bold")).pack(side="left", padx=3)
+
+        row2 = tk.Frame(self, bg=T.COLORS["bg"])
+        row2.pack(fill="x", padx=14, pady=(0, 6))
+        self._mcap = False
+        self._mcbtn = W.RoundButton(row2, "🎯 연속 찍기", self._toggle_multiclick, bg=T.COLORS["amber"],
+                                    hover=T.COLORS["amberDk"], width=120, height=34, radius=11, font=T.font(9, "bold"))
+        self._mcbtn.pack(side="left", padx=3)
+        W.RoundButton(row2, "📡 멀티 타겟 (여러 방)", self._open_broadcast, bg=T.COLORS["green"],
+                      hover=T.COLORS["greenDk"], width=170, height=34, radius=11, font=T.font(9, "bold")).pack(side="left", padx=3)
 
         add = W.Card(self, "➕ 동작 추가")
         add.pack(fill="x", padx=14, pady=(2, 10))
@@ -103,6 +120,24 @@ class Editor(tk.Toplevel):
     def _record(self):
         self.app.record_into(self.macro, on_done=self._refresh)
 
+    def _toggle_multiclick(self):
+        if self._mcap:
+            self._mcap = False
+            self.app.disarm_pick()
+            self._mcbtn.set_text("🎯 연속 찍기")
+        else:
+            self._mcap = True
+            self.app.arm_pick(self._append_click, multi=True)
+            self._mcbtn.set_text("■ 찍기 멈춤 (F8)")
+            self.app.toast("🎯 F8 누를 때마다 그 자리 클릭 동작 추가")
+
+    def _append_click(self, x, y):
+        self.macro.actions.append({"type": "click", "delay": 0.0, "x": x, "y": y, "button": "left", "count": 1})
+        self._refresh()
+
+    def _open_broadcast(self):
+        Broadcast(self.app, self.macro, on_added=self._refresh)
+
     def _relabel(self):
         t = self.tmap[self.vtype.get()]
         a, b, c = LABELS[t]
@@ -129,7 +164,26 @@ class Editor(tk.Toplevel):
     def _make(self, t):
         v1, v2, v3 = self.v1.get().strip(), self.v2.get().strip(), self.v3.get().strip()
         pre = (float(v3 or 0) / 1000.0) if t in ("type", "move") else \
-              (float(v2 or 0) / 1000.0) if t in ("hotkey", "scroll") else 0.0
+              (float(v2 or 0) / 1000.0) if t in ("hotkey", "scroll", "paste") else 0.0
+        if t == "paste":
+            return {"type": "paste", "delay": pre, "text": self.v1.get()}
+        if t == "wait_image":
+            return {"type": "wait_image", "delay": 0.0, "path": v1,
+                    "confidence": float(v2 or 0.8), "timeout": float(v3 or 10)}
+        if t == "if_image":
+            when = "notfound" if v2.lower().startswith("not") else "found"
+            return {"type": "if_image", "delay": 0.0, "path": v1, "when": when,
+                    "skip": int(float(v3 or 1))}
+        if t == "window":
+            op = (v2 or "activate").lower()
+            d = {"type": "window", "delay": 0.0, "op": op, "title": v1}
+            if "," in v3:
+                aa, bb = (v3.split(",") + ["", ""])[:2]
+                if op == "move":
+                    d["x"], d["y"] = int(aa), int(bb)
+                elif op == "resize":
+                    d["w"], d["h"] = int(aa), int(bb)
+            return d
         if t == "click":
             xy = v1.split(",")
             a = {"type": "click", "delay": 0.0, "x": int(xy[0]), "y": int(xy[1]),
@@ -154,5 +208,7 @@ class Editor(tk.Toplevel):
 
     def _close(self):
         self.app.disarm_pick()
+        if getattr(self.app, "_rec_done", None) == self._refresh:
+            self.app._rec_done = None      # 이 창이 건 녹화 콜백 떼기 (닫힌 뒤 호출되면 터짐)
         self.app.refresh_macros()
         self.destroy()

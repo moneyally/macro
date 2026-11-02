@@ -4,12 +4,15 @@
 단죄 매크로 기능(목록·기록·추가·편집·복사·삭제·실행주기·한영감지·키떼기·마우스복구)을
 2026 톤(둥근 버튼·웜 팔레트)으로 재구성.
 """
+import queue
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
 from pynput import keyboard
 
 from .. import keys as K
+from .. import store
 from ..engine import Engine
 from ..model import Macro, MacroSet
 from ..player import Player
@@ -17,6 +20,7 @@ from ..recorder import STOP_KEYS, Recorder
 from . import theme as T
 from . import widgets as W
 from .editor import Editor
+from .history import History
 
 MODE_EDIT, MODE_RUN = "edit", "run"
 CTRL_KEYS = {keyboard.Key.f8, keyboard.Key.f9, keyboard.Key.f10, keyboard.Key.f12}
@@ -25,18 +29,27 @@ CTRL_KEYS = {keyboard.Key.f8, keyboard.Key.f9, keyboard.Key.f10, keyboard.Key.f1
 class App:
     def __init__(self, root):
         self.root = root
-        self.set = MacroSet()
-        self.set.add(Macro(name="Macro 1"))
+        self.set = store.load_set() or MacroSet()   # 자동저장 불러오기 (작업 안 날아감)
+        if not self.set.macros:
+            self.set.add(Macro(name="Macro 1"))
         self.eng = Engine()
         self.player = Player(self.eng)
-        self.player.on_status = lambda t: self.root.after(0, self.toast, t)
-        self.player.on_done = lambda n: self.root.after(0, self._on_play_done, n)
+        # 재생/리스너 스레드 → 큐로만 넘기고, 창(tkinter)은 메인스레드(_tick)에서만 건드림
+        self._evtq = queue.Queue()
+        self.player.on_status = lambda t: self._evtq.put(("status", t))
+        self.player.on_done = lambda n: self._evtq.put(("done", n))
         self.rec = None
         self.recording = False
         self._rec_target = None
         self._rec_done = None
         self.mode = MODE_EDIT
         self.pick_cb = None
+        self._pick_multi = False
+        self._last_name = "?"
+        self._last_macro = None       # 체인(끝나면 다음 매크로)용
+        self._chain_seen = set()      # 체인 무한루프 방지
+        self._sched_fired = {}        # 예약 실행: {매크로이름: 'YYYY-MM-DD HH:MM'}
+        self._closing = False
         self.path = None
 
         self.status = tk.StringVar(value="편집 모드")
@@ -102,16 +115,22 @@ class App:
         self.m_hot = tk.StringVar()
         self.m_loop = tk.StringVar(value="1")
         self.m_speed = tk.StringVar(value="1.0")
+        self.m_chain = tk.StringVar()
+        self.m_sched = tk.StringVar()
         W.label(b, "실행 단축키 (예 f1)").grid(row=0, column=0, sticky="e", padx=4, pady=3)
         W.entry(b, self.m_hot, 8).grid(row=0, column=1, sticky="w")
         W.label(b, "반복(0=무한)").grid(row=0, column=2, sticky="e", padx=4)
         W.entry(b, self.m_loop, 6).grid(row=0, column=3, sticky="w")
         W.label(b, "배속").grid(row=1, column=0, sticky="e", padx=4, pady=3)
         W.entry(b, self.m_speed, 6).grid(row=1, column=1, sticky="w")
-        for v in (self.m_hot, self.m_loop, self.m_speed):
-            v.trace_add("write", lambda *a: self._save_sel())
         W.RoundButton(b, "▶ 테스트 실행", self.test_run, bg=T.COLORS["green"], hover=T.COLORS["greenDk"],
                       width=120, height=32, radius=10, font=T.font(9, "bold")).grid(row=1, column=2, columnspan=2, padx=4)
+        W.label(b, "🔗 끝나면 실행할 매크로").grid(row=2, column=0, sticky="e", padx=4, pady=3)
+        W.entry(b, self.m_chain, 16).grid(row=2, column=1, columnspan=3, sticky="w")
+        W.label(b, "⏰ 매일 자동 실행 (HH:MM)").grid(row=3, column=0, sticky="e", padx=4, pady=3)
+        W.entry(b, self.m_sched, 10).grid(row=3, column=1, sticky="w")
+        for v in (self.m_hot, self.m_loop, self.m_speed, self.m_chain, self.m_sched):
+            v.trace_add("write", lambda *a: self._save_sel())
 
         # 전역 설정
         gc = W.Card(r, "⚙ 전역 설정")
@@ -119,10 +138,16 @@ class App:
         b = gc.body
         self.cycle = tk.StringVar(value=str(self.set.cycle_ms))
         self.jit = tk.StringVar(value=str(self.set.jitter_pct))
+        self.rmin = tk.StringVar(value=str(self.set.rand_min_ms))
+        self.rmax = tk.StringVar(value=str(self.set.rand_max_ms))
         W.label(b, "이벤트 실행 주기(ms)").grid(row=0, column=0, sticky="e", padx=4, pady=3)
         W.entry(b, self.cycle, 6).grid(row=0, column=1, sticky="w")
         W.label(b, "타이밍 랜덤 ±%").grid(row=0, column=2, sticky="e", padx=4)
         W.entry(b, self.jit, 6).grid(row=0, column=3, sticky="w")
+        W.label(b, "🎲 동작마다 랜덤 대기(ms) 최소").grid(row=1, column=0, sticky="e", padx=4, pady=3)
+        W.entry(b, self.rmin, 6).grid(row=1, column=1, sticky="w")
+        W.label(b, "최대").grid(row=1, column=2, sticky="e", padx=4)
+        W.entry(b, self.rmax, 6).grid(row=1, column=3, sticky="w")
         self.c_ime = tk.BooleanVar(value=self.set.ime_detect)
         self.c_rel = tk.BooleanVar(value=self.set.release_on_stop)
         self.c_res = tk.BooleanVar(value=self.set.restore_mouse)
@@ -133,8 +158,8 @@ class App:
                                         ("녹화할 때 마우스 '이동'도 기록", self.c_mov)]):
             tk.Checkbutton(b, text=txt, variable=var, bg=T.COLORS["surface"], fg=T.COLORS["sub"],
                            activebackground=T.COLORS["surface"], selectcolor="white",
-                           font=T.font(9), command=self._save_global).grid(row=1 + i, column=0, columnspan=4, sticky="w", pady=1)
-        for v in (self.cycle, self.jit):
+                           font=T.font(9), command=self._save_global).grid(row=2 + i, column=0, columnspan=4, sticky="w", pady=1)
+        for v in (self.cycle, self.jit, self.rmin, self.rmax):
             v.trace_add("write", lambda *a: self._save_global())
 
         # 파일 + 종료
@@ -143,9 +168,11 @@ class App:
         W.RoundButton(fc, "💾 저장", self.save_file, bg=T.COLORS["accent"], hover=T.COLORS["accentDk"],
                       width=100, height=38).pack(side="left", padx=4)
         W.RoundButton(fc, "📂 불러오기", self.load_file, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
-                      width=110, height=38).pack(side="left", padx=4)
+                      width=104, height=38).pack(side="left", padx=4)
+        W.RoundButton(fc, "📜 기록", self.show_history, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
+                      width=84, height=38).pack(side="left", padx=4)
         W.RoundButton(fc, "■ 정지", self.stop_play, bg=T.COLORS["red"], hover=T.COLORS["redDk"],
-                      width=90, height=38).pack(side="left", padx=4)
+                      width=84, height=38).pack(side="left", padx=4)
         W.RoundButton(fc, "종료", self._quit, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
                       width=80, height=38).pack(side="right", padx=4)
 
@@ -165,6 +192,7 @@ class App:
             self.lb.selection_clear(0, "end")
             self.lb.selection_set(min(sel if sel is not None else 0, len(self.set.macros) - 1))
         self._sync_sel()
+        store.save_set(self.set)        # 자동 저장
 
     def _sel_index(self):
         s = self.lb.curselection()
@@ -180,6 +208,7 @@ class App:
             return
         self._loading = True
         self.m_hot.set(m.hotkey); self.m_loop.set(str(m.loops)); self.m_speed.set(str(m.speed))
+        self.m_chain.set(m.chain); self.m_sched.set(m.schedule)
         self._loading = False
 
     def _save_sel(self):
@@ -197,7 +226,31 @@ class App:
             m.speed = max(0.05, float(self.m_speed.get()))
         except ValueError:
             pass
+        m.chain = self.m_chain.get().strip()
+        m.schedule = self._clean_time(self.m_sched.get())
         self.lb_quiet_refresh()
+        store.save_set(self.set)
+
+    @staticmethod
+    def _clean_time(s):
+        """'9:5' '0930' 등 → 'HH:MM' 로 정리, 이상하면 빈값."""
+        s = (s or "").strip()
+        if not s:
+            return ""
+        s = s.replace("：", ":")
+        try:
+            if ":" in s:
+                h, m = s.split(":", 1)
+            elif len(s) == 4 and s.isdigit():
+                h, m = s[:2], s[2:]
+            else:
+                return ""
+            h, m = int(h), int(m)
+            if 0 <= h < 24 and 0 <= m < 60:
+                return f"{h:02d}:{m:02d}"
+        except Exception:
+            pass
+        return ""
 
     def lb_quiet_refresh(self):
         i = self._sel_index()
@@ -218,10 +271,19 @@ class App:
             self.set.jitter_pct = max(0, int(float(self.jit.get())))
         except ValueError:
             pass
+        try:
+            self.set.rand_min_ms = max(0, int(float(self.rmin.get())))
+        except ValueError:
+            pass
+        try:
+            self.set.rand_max_ms = max(0, int(float(self.rmax.get())))
+        except ValueError:
+            pass
         self.set.ime_detect = self.c_ime.get()
         self.set.release_on_stop = self.c_rel.get()
         self.set.restore_mouse = self.c_res.get()
         self.set.record_moves = self.c_mov.get()
+        store.save_set(self.set)
 
     def add_macro(self):
         self.set.add()
@@ -301,7 +363,11 @@ class App:
             self._recbtn.set_text("● 기록")
         self.toast(f"녹화 끝 · {len(actions)}동작")
         if self._rec_done:
-            self._rec_done()
+            try:                        # 편집창이 이미 닫혔으면 죽은 위젯 건드려 터질 수 있음
+                self._rec_done()
+            except Exception:
+                pass
+            self._rec_done = None
         self.refresh_macros()
 
     # ── 재생 ──────────────────────────────────────────────
@@ -310,24 +376,50 @@ class App:
         if m:
             self._play(m)
 
-    def _play(self, macro):
+    def _play(self, macro, reset_chain=True):
+        if self._closing:
+            return
         if self.recording or self.player.playing or not macro.actions:
             if not macro.actions:
                 self.toast("동작이 없어요 (기록/편집)")
             return
         self._save_global()
+        self._last_name = macro.name
+        self._last_macro = macro
+        if reset_chain:
+            self._chain_seen = {macro.name}
         self.player.play(
             macro.actions, loops=macro.loops, speed=macro.speed,
             jitter=self.set.jitter_pct / 100.0, cycle=self.set.cycle_ms / 1000.0,
             ime_lock=self.set.ime_detect, release_all=self.set.release_on_stop,
-            restore_mouse=self.set.restore_mouse)
+            restore_mouse=self.set.restore_mouse,
+            rand_min=self.set.rand_min_ms / 1000.0, rand_max=self.set.rand_max_ms / 1000.0)
         self.toast(f"▶ '{macro.name}' 실행")
 
     def stop_play(self):
+        self._chain_seen = set()      # 정지하면 체인도 끊음
         self.player.stop()
+
+    def _find_macro(self, name):
+        name = (name or "").strip()
+        for m in self.set.macros:
+            if m.name == name:
+                return m
+        return None
 
     def _on_play_done(self, n):
         self.toast(f"실행 끝 ({n}회)")
+        store.log_run(self._last_name, n)      # 실행 기록(SQLite)
+        # 🔗 체인: 끝나면 이어서 다음 매크로 (무한루프 방지 — 이미 돈 건 안 함)
+        m = self._last_macro
+        if m and m.chain and not self._closing:
+            nxt = self._find_macro(m.chain)
+            if nxt and nxt.name not in self._chain_seen and nxt.actions:
+                self._chain_seen.add(nxt.name)
+                self.root.after(120, lambda: self._play(nxt, reset_chain=False))
+
+    def show_history(self):
+        History(self)
 
     # ── 모드 토글 (F12) ───────────────────────────────────
     def toggle_mode(self):
@@ -345,34 +437,40 @@ class App:
 
     # ── 전역 단축키 ───────────────────────────────────────
     def _on_key(self, key):
+        # 이 콜백은 pynput 리스너(딴 스레드)에서 옴 → 창은 직접 못 건드림, 큐로만 넘김
+        if self._closing:
+            return
         if key == keyboard.Key.f8 and self.pick_cb:
             x, y = self.eng.get_pos()
             cb = self.pick_cb
-            self.pick_cb = None
-            self.root.after(0, lambda: cb(int(x), int(y)))
+            if not self._pick_multi:           # 멀티면 계속 찍기, 아니면 한 번만
+                self.pick_cb = None
+            self._evtq.put(("call", lambda cx=int(x), cy=int(y): cb(cx, cy)))
             return
         if key == keyboard.Key.f12:
-            self.root.after(0, self.toggle_mode)
+            self._evtq.put(("call", self.toggle_mode))
             return
         if key == keyboard.Key.f9:
-            self.root.after(0, self.toggle_record)
+            self._evtq.put(("call", self.toggle_record))
             return
         if key == keyboard.Key.f10:
-            self.root.after(0, self.stop_play)
+            self._evtq.put(("call", self.stop_play))
             return
         if self.mode == MODE_RUN and not self.player.playing:
             name = K.key_name(key)
             for m in self.set.macros:
                 if m.hotkey and m.hotkey == name:
-                    self.root.after(0, lambda mm=m: self._play(mm))
+                    self._evtq.put(("call", lambda mm=m: self._play(mm)))
                     break
 
     # 편집창이 좌표 찍기 요청
-    def arm_pick(self, cb):
+    def arm_pick(self, cb, multi=False):
         self.pick_cb = cb
+        self._pick_multi = multi
 
     def disarm_pick(self):
         self.pick_cb = None
+        self._pick_multi = False
 
     # ── 파일 ──────────────────────────────────────────────
     def save_file(self):
@@ -397,6 +495,7 @@ class App:
             if not self.set.macros:
                 self.set.add(Macro(name="Macro 1"))
             self.cycle.set(str(self.set.cycle_ms)); self.jit.set(str(self.set.jitter_pct))
+            self.rmin.set(str(self.set.rand_min_ms)); self.rmax.set(str(self.set.rand_max_ms))
             self.c_ime.set(self.set.ime_detect); self.c_rel.set(self.set.release_on_stop)
             self.c_res.set(self.set.restore_mouse); self.c_mov.set(self.set.record_moves)
             self.refresh_macros()
@@ -409,19 +508,74 @@ class App:
         self.status.set(t)
 
     def _tick(self):
+        # 딴 스레드가 큐에 넣은 일을 여기(메인스레드)서 처리 — tkinter 안전
+        for _ in range(200):
+            try:
+                kind, val = self._evtq.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if kind == "status":
+                    self.toast(val)
+                elif kind == "done":
+                    self._on_play_done(val)
+                elif kind == "call":
+                    val()
+            except Exception:
+                pass
         try:
             x, y = self.eng.get_pos()
             self.mousev.set(f"🖱 ({int(x)}, {int(y)})")
         except Exception:
             pass
-        self.root.after(90, self._tick)
+        self._check_schedule()
+        if not self._closing:
+            self.root.after(90, self._tick)
+
+    def _check_schedule(self):
+        # ⏰ 매일 HH:MM 자동 실행 (분당 1번만 검사, 같은 분 중복 실행 방지)
+        if self.mode != MODE_RUN or self.player.playing or self.recording:
+            return
+        now = time.localtime()
+        stamp = time.strftime("%Y-%m-%d %H:%M", now)
+        hm = time.strftime("%H:%M", now)
+        for m in self.set.macros:
+            if m.schedule and m.schedule == hm and m.actions:
+                if self._sched_fired.get(m.name) != stamp:
+                    self._sched_fired[m.name] = stamp
+                    self._play(m)
+                    break
 
     def _quit(self):
+        self._closing = True
+        # 콜백부터 끊어 파괴된 창을 건드리지 않게
+        self.player.on_status = None
+        self.player.on_done = None
         try:
             self.player.stop()
+            t = self.player._thread
+            if t and t.is_alive():
+                t.join(timeout=2)         # 재생 스레드가 눌린 키 다 떼고 끝날 때까지 기다림
+        except Exception:
+            pass
+        try:
             if self.recording and self.rec:
                 self.rec.stop()
+        except Exception:
+            pass
+        try:
             self._hk.stop()
         except Exception:
             pass
-        self.root.destroy()
+        try:
+            self.eng.release_all()        # 혹시 남은 키/버튼 최종 떼기
+        except Exception:
+            pass
+        try:
+            store.save_set(self.set)      # 끌 때 자동 저장
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass

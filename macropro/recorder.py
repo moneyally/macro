@@ -11,6 +11,7 @@ from . import keys as K
 from .timing import now
 
 STOP_KEYS = set()   # 녹화에 기록하지 않을 제어키 (앱이 채워 줌: F8/F9/F10/F12 등)
+MAX_ACTIONS = 200000   # 아주 오래 녹화해도 메모리 안 터지게 상한
 
 
 class Recorder:
@@ -45,13 +46,16 @@ class Recorder:
         return self.actions
 
     def _add(self, d):
+        if len(self.actions) >= MAX_ACTIONS:
+            self.running = False        # 상한 도달 → 더 안 쌓음 (앱이 다음 틱에 정지 처리)
+            return
         t = now()
         d["delay"] = max(0.0, t - self._last)
         self._last = t
         self.actions.append(d)
 
     def _on_move(self, x, y):
-        if not self.record_moves:
+        if not self.record_moves or not self.running:
             return
         t = now()
         if t - self._last_move < self.move_interval:
