@@ -118,6 +118,54 @@ class NavButton(tk.Frame):
         self._paint()
 
 
+class MacroRow(tk.Frame):
+    """사이드바 매크로 줄 — 이름 + 작은 설명, 선택·호버 표시(밝은 목록형)."""
+    def __init__(self, parent, command):
+        super().__init__(parent, bg=T.COLORS["panel"], cursor="hand2")
+        self.command = command
+        self._on = False
+        self.t1 = tk.Label(self, bg=T.COLORS["panel"], fg=T.COLORS["ink"],
+                           font=T.font(10, "bold"), anchor="w")
+        self.t1.pack(fill="x", padx=12, pady=(6, 0))
+        self.t2 = tk.Label(self, bg=T.COLORS["panel"], fg=T.COLORS["sub"],
+                           font=T.font(8), anchor="w")
+        self.t2.pack(fill="x", padx=12, pady=(0, 6))
+        for w in (self, self.t1, self.t2):
+            w.bind("<Button-1>", lambda e: self.command() if self.command else None)
+            w.bind("<Enter>", lambda e: self._paint(True))
+            w.bind("<Leave>", lambda e: self._paint(False))
+
+    def set(self, name, meta):
+        self.t1.config(text=name)
+        self.t2.config(text=meta)
+
+    def _paint(self, hover):
+        bg = T.COLORS["rowOn"] if self._on else (T.COLORS["rowHover"] if hover else T.COLORS["panel"])
+        self.config(bg=bg)
+        self.t1.config(bg=bg)
+        self.t2.config(bg=bg)
+
+    def set_active(self, on):
+        self._on = on
+        self._paint(False)
+
+
+class SideLink(tk.Label):
+    """사이드바 아래쪽 한 줄 메뉴(설정·기록·도움말)."""
+    def __init__(self, parent, text, command):
+        super().__init__(parent, text=text, bg=T.COLORS["panel"], fg=T.COLORS["ink"],
+                         font=T.font(10), anchor="w", padx=12, pady=6, cursor="hand2")
+        self._cmd = command
+        self._on = False
+        self.bind("<Button-1>", lambda e: self._cmd() if self._cmd else None)
+        self.bind("<Enter>", lambda e: (not self._on) and self.config(bg=T.COLORS["rowHover"]))
+        self.bind("<Leave>", lambda e: self.config(bg=T.COLORS["rowOn"] if self._on else T.COLORS["panel"]))
+
+    def set_active(self, on):
+        self._on = on
+        self.config(bg=T.COLORS["rowOn"] if on else T.COLORS["panel"])
+
+
 class ScrollFrame(tk.Frame):
     """세로 스크롤 되는 영역 — 내용은 `.body` 에 넣는다.
 

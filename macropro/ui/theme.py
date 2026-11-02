@@ -29,11 +29,16 @@ COLORS = {
     "amberDk":   "#A9731F",
     "chipOn":    "#1F7A4D",
     "chipOff":   "#8A867A",
-    # 사이드바(어두운 웜 톤 — Codex/ChatGPT 느낌)
-    "side":      "#2A2925",   # 사이드바 배경
-    "sideHover": "#3B3A35",   # 항목 호버
-    "sideInk":   "#CFCABB",   # 사이드바 글자(연한 크림)
-    "sideSub":   "#908B7E",   # 사이드바 보조
+    # 사이드바(어두운 웜 톤 — 옛 버전 호환용)
+    "side":      "#2A2925",
+    "sideHover": "#3B3A35",
+    "sideInk":   "#CFCABB",
+    "sideSub":   "#908B7E",
+    # 밝은 목록형 사이드바(Claude 앱 느낌)
+    "panel":     "#F4F2EA",   # 사이드바 배경(살짝 어두운 크림)
+    "panelLine": "#E0DCCF",   # 사이드바-메인 경계선
+    "rowOn":     "#EDE3D7",   # 선택된 줄
+    "rowHover":  "#ECE9DF",   # 마우스 올린 줄
 }
 
 _UI = "Segoe UI" if _WIN else "Noto Sans CJK KR"

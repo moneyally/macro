@@ -18,6 +18,8 @@ TYPES = [("click", "🖱 클릭"), ("type", "✎ 문구 입력"), ("paste", "�
          ("wait_image", "⏳ 이미지 뜰 때까지"), ("if_image", "🔀 이미지 조건"),
          ("ifcond", "🧠 조건(값·창·픽셀)"), ("wclick", "🪟 창 기준 클릭"),
          ("increment", "🔢 변수 +1"), ("window", "🪟 창 조절")]
+# 고급 모드에서만 보이는 동작 (쉬움 모드에선 숨김)
+ADV_TYPES = {"wait_image", "if_image", "ifcond", "wclick", "increment"}
 LABELS = {
     "click": ("좌표 x,y", "버튼 left/right/middle", "횟수 (,흔들기px)"),
     "type": ("문구 (타이핑할 글, {번호}·{날짜}·변수 가능)", "초당 글자수(0=즉시)", "앞 대기(ms)"),
@@ -79,8 +81,11 @@ class Editor(tk.Toplevel):
         add.pack(fill="x", padx=14, pady=(2, 10))
         b = add.body
         self.vtype = tk.StringVar(value=TYPES[0][1])
-        self.tmap = {v: k for k, v in TYPES}
-        cb = ttk.Combobox(b, textvariable=self.vtype, state="readonly", width=16, values=[v for _, v in TYPES])
+        adv = getattr(app.set, "advanced", False)
+        types = TYPES if adv else [t for t in TYPES if t[0] not in ADV_TYPES]
+        self.vtype.set(types[0][1])
+        self.tmap = {v: k for k, v in types}
+        cb = ttk.Combobox(b, textvariable=self.vtype, state="readonly", width=16, values=[v for _, v in types])
         cb.grid(row=0, column=0, padx=2, pady=4, sticky="w")
         cb.bind("<<ComboboxSelected>>", lambda e: self._relabel())
         self.l1 = W.label(b, "좌표 x,y"); self.l1.grid(row=1, column=0, sticky="e", pady=2)

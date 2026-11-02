@@ -111,6 +111,7 @@ class App:
         self.pick_cb = None
         self._pick_multi = False
         self._last_name = "?"
+        self._cur = 0                 # 지금 고른 매크로 번호(사이드바 목록)
         self._last_macro = None       # 체인(끝나면 다음 매크로)용
         self._chain_seen = set()      # 체인 무한루프 방지
         self._sched_fired = {}        # 예약 실행: {매크로이름: 'YYYY-MM-DD HH:MM'}
@@ -129,7 +130,8 @@ class App:
         self._hk.start()
         self.root.after(80, self._tick)
         self.root.protocol("WM_DELETE_WINDOW", self._quit)
-        self.refresh_macros()
+        self.refresh_sidebar()
+        self.select_macro(0)
 
     def _style(self):
         self.root.configure(bg=T.COLORS["bg"])
@@ -169,44 +171,61 @@ class App:
         self.main_body.pack(side="top", fill="both", expand=True)
 
         self.pages = {}
-        self._build_page_macros()
+        self._build_page_macro()
         self._build_page_global()
         self._build_page_settings()
         self._build_page_history()
         self._build_page_help()
-        self.show_page("macros")
+        self._apply_advanced()      # 고급 모드 초기 반영(기본 꺼짐)
+        self.show_page("macro")
 
     def _build_sidebar(self, r):
-        side = tk.Frame(r, bg=T.COLORS["side"], width=200)
+        side = tk.Frame(r, bg=T.COLORS["panel"], width=214,
+                        highlightbackground=T.COLORS["panelLine"], highlightthickness=1)
         side.grid(row=0, column=0, sticky="nsew")
         side.grid_propagate(False)
         side.pack_propagate(False)
-        tk.Label(side, text="⚡  매크로 PRO", bg=T.COLORS["side"], fg=T.COLORS["sideInk"],
-                 font=T.font(13, "bold")).pack(anchor="w", padx=18, pady=(18, 2))
-        pf = tk.Frame(side, bg=T.COLORS["side"])
-        pf.pack(anchor="w", padx=16, pady=(2, 14))
-        self.pill = W.Pill(pf, "편집 모드", T.COLORS["slate"], width=150, height=28)
-        self.pill.pack(anchor="w")
 
-        self._nav = {}
-        for key, text in [("macros", "📋   매크로"), ("global", "⚙   전역 설정"),
-                          ("settings", "🔧   변수·대상"),
+        # 헤더: 제목 + ＋ 새 매크로
+        head = tk.Frame(side, bg=T.COLORS["panel"])
+        head.pack(fill="x", padx=12, pady=(14, 4))
+        tk.Label(head, text="⚡ 매크로 PRO", bg=T.COLORS["panel"], fg=T.COLORS["ink"],
+                 font=T.font(12, "bold")).pack(side="left")
+        W.RoundButton(head, "＋", self.add_macro, bg=T.COLORS["accent"], hover=T.COLORS["accentDk"],
+                      width=30, height=26, radius=8, font=T.font(12, "bold")).pack(side="right")
+
+        # 🔍 검색
+        sr = tk.Frame(side, bg=T.COLORS["panel"])
+        sr.pack(fill="x", padx=12, pady=(0, 6))
+        self.search = tk.StringVar()
+        W.entry(sr, self.search, 18).pack(fill="x")
+        self.search.trace_add("write", lambda *a: self.refresh_sidebar())
+
+        # 아래 고정(설정·기록·도움말·고급·정지)
+        foot = tk.Frame(side, bg=T.COLORS["panel"])
+        foot.pack(side="bottom", fill="x")
+        self.pill = W.Pill(foot, "편집 모드", T.COLORS["slate"], width=150, height=24)
+        self.pill.pack(anchor="w", padx=12, pady=(4, 4))
+        self._links = {}
+        for key, text in [("global", "⚙   전역 설정"), ("settings", "🔧   변수·대상"),
                           ("history", "📜   실행 기록"), ("help", "❓   도움말")]:
-            nb = W.NavButton(side, text, lambda k=key: self.show_page(k))
-            nb.pack(fill="x", padx=10, pady=1)
-            self._nav[key] = nb
+            ln = W.SideLink(foot, text, lambda k=key: self.show_page(k))
+            ln.pack(fill="x", padx=6)
+            self._links[key] = ln
+        self._advlink = W.SideLink(foot, "🧰   고급 모드  (꺼짐)", self._toggle_advanced)
+        self._advlink.pack(fill="x", padx=6, pady=(2, 2))
+        fbar = tk.Frame(foot, bg=T.COLORS["panel"])
+        fbar.pack(fill="x", padx=8, pady=(2, 10))
+        for txt, cmd, ck in [("💾", self.save_file, "slate"), ("📂", self.load_file, "slate"),
+                             ("■ 정지", self.stop_play, "red"), ("종료", self._quit, "slate")]:
+            W.RoundButton(fbar, txt, cmd, bg=T.COLORS[ck], hover=T.COLORS[ck + "Dk"],
+                          width=44 if len(txt) < 3 else 64, height=30, radius=9,
+                          font=T.font(9, "bold")).pack(side="left", expand=True, fill="x", padx=2)
 
-        tk.Frame(side, bg=T.COLORS["side"]).pack(fill="both", expand=True)   # 아래로 밀기(spacer)
-
-        for row in (
-            [("💾 저장", self.save_file, "accent"), ("📂 열기", self.load_file, "slate")],
-            [("■ 정지", self.stop_play, "red"), ("종료", self._quit, "slate")],
-        ):
-            bar = tk.Frame(side, bg=T.COLORS["side"])
-            bar.pack(fill="x", padx=10, pady=(0, 6))
-            for txt, cmd, ck in row:
-                W.RoundButton(bar, txt, cmd, bg=T.COLORS[ck], hover=T.COLORS[ck + "Dk"],
-                              width=84, height=34, radius=10, font=T.font(9, "bold")).pack(side="left", expand=True, fill="x", padx=2)
+        # 매크로 목록(스크롤) — 가운데
+        self._mlist = W.ScrollFrame(side, bg=T.COLORS["panel"])
+        self._mlist.pack(side="top", fill="both", expand=True)
+        self._mrows = []
 
     # ── 페이지들 ──────────────────────────────────────────
     def _page_frame(self, key):
@@ -214,36 +233,33 @@ class App:
         self.pages[key] = f
         return f
 
-    def _build_page_macros(self):
-        f = self._page_frame("macros")
+    def _build_page_macro(self):
+        f = self._page_frame("macro")
         sc = W.ScrollFrame(f)
         sc.pack(fill="both", expand=True)
         host = sc.body
 
-        listcard = W.Card(host, "📋 매크로 목록  (F12 = 실행↔편집 전환)")
-        listcard.pack(fill="x", padx=14, pady=(4, 0))
-        inner = tk.Frame(listcard.body, bg=T.COLORS["surface"])
-        inner.pack(fill="both", expand=True)
-        self.lb = tk.Listbox(inner, height=7, font=T.font(11), bg="white", fg=T.COLORS["ink"],
-                             selectbackground=T.COLORS["accentSoft"], selectforeground=T.COLORS["ink"],
-                             relief="flat", highlightthickness=0, activestyle="none")
-        self.lb.pack(side="left", fill="both", expand=True)
-        self.lb.bind("<<ListboxSelect>>", lambda e: self._sync_sel())
-        btns = tk.Frame(inner, bg=T.COLORS["surface"])
-        btns.pack(side="right", fill="y", padx=(10, 0))
-        specs = [("● 기록", self.toggle_record, "accent"), ("＋ 추가", self.add_macro, "slate"),
-                 ("✎ 편집", self.edit_macro, "slate"), ("⧉ 복사", self.copy_macro, "slate"),
-                 ("🗑 삭제", self.del_macro, "red"), ("▲", lambda: self.move_macro(-1), "slate"),
-                 ("▼", lambda: self.move_macro(1), "slate")]
+        # 선택된 매크로의 동작
+        ac = W.Card(host, "🎬 동작  (✎ 편집에서 추가·수정)")
+        ac.pack(fill="x", padx=14, pady=(4, 0))
+        self.act_lb = tk.Listbox(ac.body, height=8, font=T.font(10), bg="white", fg=T.COLORS["ink"],
+                                 selectbackground=T.COLORS["accentSoft"], selectforeground=T.COLORS["ink"],
+                                 relief="flat", highlightthickness=0, activestyle="none")
+        self.act_lb.pack(fill="both", expand=True)
+        arow = tk.Frame(ac.body, bg=T.COLORS["surface"])
+        arow.pack(fill="x", pady=(6, 0))
         self._recbtn = None
-        for txt, cmd, ck in specs:
-            b = W.RoundButton(btns, txt, cmd, bg=T.COLORS[ck], hover=T.COLORS[ck + "Dk"],
-                              width=96, height=32, radius=10, font=T.font(9, "bold"))
-            b.pack(pady=3)
+        for txt, cmd, ck in [("● 기록", self.toggle_record, "accent"), ("✎ 편집", self.edit_macro, "slate"),
+                             ("⧉ 복사", self.copy_macro, "slate"), ("🗑 삭제", self.del_macro, "red"),
+                             ("▲", lambda: self.move_macro(-1), "slate"), ("▼", lambda: self.move_macro(1), "slate")]:
+            btn = W.RoundButton(arow, txt, cmd, bg=T.COLORS[ck], hover=T.COLORS[ck + "Dk"],
+                                width=92 if len(txt) > 2 else 40, height=32, radius=10, font=T.font(9, "bold"))
+            btn.pack(side="left", padx=2)
             if "기록" in txt:
-                self._recbtn = b
+                self._recbtn = btn
 
-        mc = W.Card(host, "🎛 선택 매크로")
+        # 설정
+        mc = W.Card(host, "🎛 설정")
         mc.pack(fill="x", padx=14, pady=(10, 12))
         b = mc.body
         self.m_hot = tk.StringVar()
@@ -259,43 +275,111 @@ class App:
         W.entry(b, self.m_speed, 6).grid(row=1, column=1, sticky="w")
         W.RoundButton(b, "▶ 테스트 실행", self.test_run, bg=T.COLORS["green"], hover=T.COLORS["greenDk"],
                       width=120, height=32, radius=10, font=T.font(9, "bold")).grid(row=1, column=2, columnspan=2, padx=4)
-        W.label(b, "🔗 끝나면 실행할 매크로").grid(row=2, column=0, sticky="e", padx=4, pady=3)
-        W.entry(b, self.m_chain, 16).grid(row=2, column=1, columnspan=3, sticky="w")
-        W.label(b, "⏰ 자동 실행 (HH:MM)").grid(row=3, column=0, sticky="e", padx=4, pady=3)
-        W.entry(b, self.m_sched, 10).grid(row=3, column=1, sticky="w")
-        # 요일 제한 (아무것도 안 고르면 매일)
-        W.label(b, "요일").grid(row=4, column=0, sticky="e", padx=4, pady=3)
-        dfr = tk.Frame(b, bg=T.COLORS["surface"])
-        dfr.grid(row=4, column=1, columnspan=3, sticky="w")
+
+        # ── 고급 (🧰 켤 때만 보임) ──
+        self._adv = tk.Frame(b, bg=T.COLORS["surface"])
+        self._adv.grid(row=2, column=0, columnspan=4, sticky="we")
+        a = self._adv
+        W.label(a, "🔗 끝나면 실행할 매크로").grid(row=0, column=0, sticky="e", padx=4, pady=3)
+        W.entry(a, self.m_chain, 16).grid(row=0, column=1, columnspan=3, sticky="w")
+        W.label(a, "⏰ 자동 실행 (HH:MM)").grid(row=1, column=0, sticky="e", padx=4, pady=3)
+        W.entry(a, self.m_sched, 10).grid(row=1, column=1, sticky="w")
+        W.label(a, "요일").grid(row=2, column=0, sticky="e", padx=4, pady=3)
+        dfr = tk.Frame(a, bg=T.COLORS["surface"])
+        dfr.grid(row=2, column=1, columnspan=3, sticky="w")
         self.m_days = []
-        for i, dn in enumerate("월화수목금토일"):
+        for dn in "월화수목금토일":
             bv = tk.BooleanVar(value=False)
             tk.Checkbutton(dfr, text=dn, variable=bv, bg=T.COLORS["surface"], fg=T.COLORS["sub"],
                            activebackground=T.COLORS["surface"], selectcolor="white",
                            font=T.font(9), command=self._save_sel).pack(side="left")
             self.m_days.append(bv)
-        W.label(b, "기간(시작~종료 YYYY-MM-DD)").grid(row=5, column=0, sticky="e", padx=4, pady=3)
+        W.label(a, "기간(시작~종료 YYYY-MM-DD)").grid(row=3, column=0, sticky="e", padx=4, pady=3)
         self.m_start = tk.StringVar(); self.m_end = tk.StringVar()
-        pfr = tk.Frame(b, bg=T.COLORS["surface"])
-        pfr.grid(row=5, column=1, columnspan=3, sticky="w")
+        pfr = tk.Frame(a, bg=T.COLORS["surface"])
+        pfr.grid(row=3, column=1, columnspan=3, sticky="w")
         W.entry(pfr, self.m_start, 11).pack(side="left")
         tk.Label(pfr, text=" ~ ", bg=T.COLORS["surface"], fg=T.COLORS["sub"]).pack(side="left")
         W.entry(pfr, self.m_end, 11).pack(side="left")
-        # 오류 기본 + 목록 + 미리보기
-        W.label(b, "오류 시").grid(row=6, column=0, sticky="e", padx=4, pady=3)
+        W.label(a, "오류 시").grid(row=4, column=0, sticky="e", padx=4, pady=3)
         self.m_err = tk.StringVar(value="멈춤")
-        ttk.Combobox(b, textvariable=self.m_err, state="readonly", width=8,
-                     values=["멈춤", "건너뛰기"]).grid(row=6, column=1, sticky="w")
-        W.RoundButton(b, "📄 목록", self._pick_list, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
-                      width=72, height=30, radius=10, font=T.font(9, "bold")).grid(row=6, column=2, padx=2)
-        W.RoundButton(b, "🧪 미리보기", self._preview, bg=T.COLORS["amber"], hover=T.COLORS["amberDk"],
-                      width=92, height=30, radius=10, font=T.font(9, "bold")).grid(row=6, column=3, padx=2)
+        ttk.Combobox(a, textvariable=self.m_err, state="readonly", width=8,
+                     values=["멈춤", "건너뛰기"]).grid(row=4, column=1, sticky="w")
+        W.RoundButton(a, "📄 목록", self._pick_list, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
+                      width=72, height=30, radius=10, font=T.font(9, "bold")).grid(row=4, column=2, padx=2)
+        W.RoundButton(a, "🧪 미리보기", self._preview, bg=T.COLORS["amber"], hover=T.COLORS["amberDk"],
+                      width=92, height=30, radius=10, font=T.font(9, "bold")).grid(row=4, column=3, padx=2)
         self.m_listlbl = tk.StringVar(value="")
-        tk.Label(b, textvariable=self.m_listlbl, bg=T.COLORS["surface"], fg=T.COLORS["sub"],
-                 font=T.font(8)).grid(row=7, column=0, columnspan=4, sticky="w")
+        tk.Label(a, textvariable=self.m_listlbl, bg=T.COLORS["surface"], fg=T.COLORS["sub"],
+                 font=T.font(8)).grid(row=5, column=0, columnspan=4, sticky="w")
         for v in (self.m_hot, self.m_loop, self.m_speed, self.m_chain, self.m_sched,
                   self.m_start, self.m_end, self.m_err):
             v.trace_add("write", lambda *a: self._save_sel())
+
+    # ── 사이드바 매크로 목록 ─────────────────────────────
+    def refresh_sidebar(self):
+        if not hasattr(self, "_mlist"):
+            return
+        q = (self.search.get() if hasattr(self, "search") else "").strip().lower()
+        host = self._mlist.body
+        for w in list(host.winfo_children()):
+            w.destroy()
+        self._mrows = []
+        for i, m in enumerate(self.set.macros):
+            if q and q not in m.name.lower():
+                continue
+            row = W.MacroRow(host, lambda idx=i: self.select_macro(idx))
+            hk = f"  [{m.hotkey}]" if m.hotkey else ""
+            loop = "∞" if m.loops == 0 else f"×{m.loops}"
+            row.set(m.name + hk, f"{len(m.actions)}동작 {loop}")
+            row.pack(fill="x", padx=6, pady=1)
+            row._idx = i
+            self._mrows.append(row)
+        self._highlight_rows()
+
+    def _highlight_rows(self):
+        for row in self._mrows:
+            row.set_active(getattr(row, "_idx", -1) == self._cur)
+
+    def select_macro(self, idx):
+        if 0 <= idx < len(self.set.macros):
+            self._cur = idx
+            self._highlight_rows()
+            self._sync_sel()
+            self._refresh_actions()
+            self.show_page("macro")
+
+    def _refresh_actions(self):
+        if not hasattr(self, "act_lb"):
+            return
+        self.act_lb.delete(0, "end")
+        m = self._sel_macro()
+        if not m or not m.actions:
+            self.act_lb.insert("end", "  (동작 없음 — ● 기록 또는 ✎ 편집에서 추가)")
+            return
+        from .. import model
+        for i, act in enumerate(m.actions, 1):
+            self.act_lb.insert("end", f"  {i:>2}. {model.action_label(act)}")
+
+    # ── 🧰 고급 모드 ─────────────────────────────────────
+    def _toggle_advanced(self):
+        self.set.advanced = not getattr(self.set, "advanced", False)
+        self._apply_advanced()
+        store.save_set(self.set)
+
+    def _apply_advanced(self):
+        adv = getattr(self.set, "advanced", False)
+        if hasattr(self, "_adv"):
+            if adv:
+                self._adv.grid()
+            else:
+                self._adv.grid_remove()
+        if hasattr(self, "_links"):
+            self._links["settings"].pack_forget()
+            if adv:
+                self._links["settings"].pack(fill="x", padx=6, before=self._links["history"])
+        if hasattr(self, "_advlink"):
+            self._advlink.config(text="🧰   고급 모드  (" + ("켜짐" if adv else "꺼짐") + ")")
 
     def _build_page_global(self):
         f = self._page_frame("global")
@@ -488,14 +572,21 @@ class App:
             store.save_set(self.set)
 
     def show_page(self, key):
+        if key not in self.pages:
+            key = "macro"
         for fr in self.pages.values():
             fr.pack_forget()
         self.pages[key].pack(fill="both", expand=True)
-        titles = {"macros": "📋  매크로", "global": "⚙  전역 설정", "settings": "🔧  변수 · 대상 · 목록",
-                  "history": "📜  실행 기록", "help": "❓  도움말"}
-        self.page_title.set(titles.get(key, ""))
-        for k, nb in self._nav.items():
-            nb.set_active(k == key)
+        if key == "macro":
+            m = self._sel_macro()
+            self.page_title.set("📋  " + (m.name if m else "매크로"))
+        else:
+            titles = {"global": "⚙  전역 설정", "settings": "🔧  변수 · 대상 · 목록",
+                      "history": "📜  실행 기록", "help": "❓  도움말"}
+            self.page_title.set(titles.get(key, ""))
+        # 아래 메뉴 하이라이트 (macro 면 전부 끔)
+        for k, ln in getattr(self, "_links", {}).items():
+            ln.set_active(k == key)
         if key == "history":
             self._refresh_history()
         elif key == "settings":
@@ -519,27 +610,17 @@ class App:
         store.clear_runs()
         self._refresh_history()
 
-    # ── 매크로 목록 ───────────────────────────────────────
+    # ── 매크로 선택/목록 ─────────────────────────────────
     def refresh_macros(self):
-        sel = self._sel_index()
-        self.lb.delete(0, "end")
-        for m in self.set.macros:
-            hk = f"  [{m.hotkey}]" if m.hotkey else ""
-            loop = "∞" if m.loops == 0 else f"×{m.loops}"
-            self.lb.insert("end", f"  {m.name}{hk}   ·{len(m.actions)}동작 {loop}")
-        if self.set.macros:
-            self.lb.selection_clear(0, "end")
-            self.lb.selection_set(min(sel if sel is not None else 0, len(self.set.macros) - 1))
+        # 호환용: 사이드바 목록 새로고침 + 현재 선택 반영
+        self.refresh_sidebar()
         self._sync_sel()
-        store.save_set(self.set)        # 자동 저장
-
-    def _sel_index(self):
-        s = self.lb.curselection()
-        return s[0] if s else None
+        self._refresh_actions()
+        store.save_set(self.set)
 
     def _sel_macro(self):
-        i = self._sel_index()
-        return self.set.macros[i] if i is not None and i < len(self.set.macros) else None
+        i = self._cur
+        return self.set.macros[i] if 0 <= i < len(self.set.macros) else None
 
     def _sync_sel(self):
         m = self._sel_macro()
@@ -579,8 +660,21 @@ class App:
         m.sched_start = self.m_start.get().strip()
         m.sched_end = self.m_end.get().strip()
         m.err = "skip" if self.m_err.get() == "건너뛰기" else "stop"
-        self.lb_quiet_refresh()
+        self._update_cur_row()          # 목록 전체 말고 지금 줄만 갱신(깜빡임 방지)
+        if self.page_title:
+            self.page_title.set("📋  " + m.name)
         store.save_set(self.set)
+
+    def _update_cur_row(self):
+        m = self._sel_macro()
+        if not m:
+            return
+        for row in getattr(self, "_mrows", []):
+            if getattr(row, "_idx", -1) == self._cur:
+                hk = f"  [{m.hotkey}]" if m.hotkey else ""
+                loop = "∞" if m.loops == 0 else f"×{m.loops}"
+                row.set(m.name + hk, f"{len(m.actions)}동작 {loop}")
+                return
 
     def _pick_list(self):
         m = self._sel_macro()
@@ -623,16 +717,6 @@ class App:
             pass
         return ""
 
-    def lb_quiet_refresh(self):
-        i = self._sel_index()
-        self.lb.delete(0, "end")
-        for m in self.set.macros:
-            hk = f"  [{m.hotkey}]" if m.hotkey else ""
-            loop = "∞" if m.loops == 0 else f"×{m.loops}"
-            self.lb.insert("end", f"  {m.name}{hk}   ·{len(m.actions)}동작 {loop}")
-        if i is not None:
-            self.lb.selection_set(i)
-
     def _save_global(self):
         try:
             self.set.cycle_ms = max(0, int(float(self.cycle.get())))
@@ -658,38 +742,38 @@ class App:
 
     def add_macro(self):
         self.set.add()
-        self.refresh_macros()
-        self.lb.selection_clear(0, "end")
-        self.lb.selection_set("end")
-        self._sync_sel()
+        store.save_set(self.set)
+        self.refresh_sidebar()
+        self.select_macro(len(self.set.macros) - 1)   # 새로 만든 것 선택
 
     def copy_macro(self):
         m = self._sel_macro()
         if m:
             self.set.macros.append(m.copy())
-            self.refresh_macros()
+            store.save_set(self.set)
+            self.refresh_sidebar()
+            self.select_macro(len(self.set.macros) - 1)
 
     def del_macro(self):
-        i = self._sel_index()
-        if i is None:
+        i = self._cur
+        if not (0 <= i < len(self.set.macros)):
             return
         if len(self.set.macros) <= 1:
             messagebox.showinfo("매크로", "최소 1개는 있어야 해요.")
             return
         del self.set.macros[i]
-        self.refresh_macros()
+        store.save_set(self.set)
+        self.refresh_sidebar()
+        self.select_macro(min(i, len(self.set.macros) - 1))
 
     def move_macro(self, d):
-        i = self._sel_index()
-        if i is None:
-            return
+        i = self._cur
         j = i + d
-        if 0 <= j < len(self.set.macros):
+        if 0 <= i < len(self.set.macros) and 0 <= j < len(self.set.macros):
             self.set.macros[i], self.set.macros[j] = self.set.macros[j], self.set.macros[i]
-            self.refresh_macros()
-            self.lb.selection_clear(0, "end")
-            self.lb.selection_set(j)
-            self._sync_sel()
+            store.save_set(self.set)
+            self.refresh_sidebar()
+            self.select_macro(j)
 
     def edit_macro(self):
         if self.mode == MODE_RUN:

@@ -82,6 +82,7 @@ class MacroSet:
         self.variables = []         # 🔢 사용자 변수 [{name,start,step,reset}]
         self.targets = []           # 📚 저장 대상 [{id,name,kind,x,y,title}]
         self.theme = "warm"         # 화면 테마 (warm 하나뿐, 확장 여지)
+        self.advanced = False       # 🧰 고급 모드 (끄면 기본 기능만 보임)
 
     def add(self, macro=None):
         macro = macro or Macro(name=self._next_name())
@@ -103,6 +104,7 @@ class MacroSet:
             "jitter_pct": self.jitter_pct, "record_moves": self.record_moves,
             "rand_min_ms": self.rand_min_ms, "rand_max_ms": self.rand_max_ms,
             "variables": self.variables, "targets": self.targets, "theme": self.theme,
+            "advanced": self.advanced,
             "macros": [m.to_dict() for m in self.macros],
         }
 
@@ -120,6 +122,7 @@ class MacroSet:
         s.variables = list(d.get("variables", []) or [])
         s.targets = list(d.get("targets", []) or [])
         s.theme = d.get("theme", "warm")
+        s.advanced = bool(d.get("advanced", False))
         s.macros = []
         for x in (d.get("macros", []) or []):
             try:
