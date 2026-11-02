@@ -8,7 +8,9 @@ import random
 
 from pynput import keyboard, mouse
 
+from . import conditions as C
 from . import keys as K
+from . import targets as TG
 from .timing import hrsleep
 
 
@@ -18,6 +20,8 @@ class Engine:
         self.kb = keyboard.Controller()
         self._down_keys = set()      # 누른 채인 키 (직렬화 dict 의 튜플화)
         self._down_btns = set()
+        self.ctx = None              # 실행 중 변수·목록(값 치환)  — player 가 넣어줌
+        self.mset = None             # 저장 대상(창 기준 좌표·broadcast) — player 가 넣어줌
 
     # ── 위치 ──────────────────────────────────────────────
     def get_pos(self):
@@ -111,6 +115,16 @@ class Engine:
         self.click(int(loc[0]), int(loc[1]), button)
         return True
 
+    def pixel(self, x, y):
+        """화면 (x,y) 의 색 (r,g,b). 못 읽으면 None."""
+        try:
+            import pyautogui
+            pyautogui.FAILSAFE = False
+            c = pyautogui.pixel(int(x), int(y))
+            return (int(c[0]), int(c[1]), int(c[2]))
+        except Exception:
+            return None
+
     def locate_image(self, path, confidence=0.8):
         """화면에서 이미지를 찾아 (x, y) 반환, 없으면 None (예외 안 터뜨림)."""
         try:
@@ -153,10 +167,13 @@ class Engine:
     def run_action(self, a, stop=None):
         t = a["type"]
         if t == "move":
+            pt = TG.resolve_click_point(self, a, self.mset)
+            if pt is None:                       # 창 기준인데 창 못 찾음 → 건너뜀
+                return
             if a.get("dur"):
-                self.move_smooth(a["x"], a["y"], a["dur"], stop)
+                self.move_smooth(pt[0], pt[1], a["dur"], stop)
             else:
-                self.set_pos(a["x"], a["y"])
+                self.set_pos(pt[0], pt[1])
         elif t == "mouse":                       # 녹화된 버튼 누름/뗌
             self.set_pos(a["x"], a["y"])
             btn = K.button_of(a["button"])
@@ -167,15 +184,24 @@ class Engine:
             key = K.deser_key(a["key"])
             (self.key_down if a["action"] == "press" else self.key_up)(key)
         elif t == "click":
-            self.click(a["x"], a["y"], a.get("button", "left"), a.get("count", 1), a.get("jitter", 0))
+            pt = TG.resolve_click_point(self, a, self.mset)
+            if pt is None:                       # 창 기준인데 창 못 찾음 → 건너뜀
+                return
+            self.click(pt[0], pt[1], a.get("button", "left"), a.get("count", 1), a.get("jitter", 0))
         elif t == "type":
-            self.type_text(a["text"], a.get("cps", 0), stop)
+            self.type_text(self._sub(a["text"]), a.get("cps", 0), stop)
+        elif t == "increment":                   # 🔢 변수 1 증가(자동 번호)
+            if self.ctx is not None:
+                self.ctx.increment(a.get("name", ""), a.get("step"))
+        elif t == "set":                         # 변수 값 지정
+            if self.ctx is not None:
+                self.ctx.set_var(a.get("name", ""), self._sub(str(a.get("value", ""))))
         elif t == "hotkey":
             self.hotkey(a["combo"])
         elif t == "image":
             self.image_click(a["path"], a.get("confidence", 0.8), a.get("button", "left"))
         elif t == "paste":                       # 📋 붙여넣기
-            self.paste(a.get("text", ""))
+            self.paste(self._sub(a.get("text", "")))
         elif t == "window":                      # 🪟 창 조절
             self.window_op(a)
         elif t == "wait_image":                  # ⏳ 이미지 뜰 때까지 대기(최대 timeout 초)
@@ -186,6 +212,12 @@ class Engine:
             ok = found if want == "found" else (not found)
             if not ok:
                 return int(a.get("skip", 1))     # 조건 불만족 → 다음 N개 건너뛰기
+        elif t == "ifcond":                      # 🧠 공통 조건: 안 맞으면 다음 N개 건너뛰기
+            ok = C.evaluate(self, a.get("condition", {}), self.ctx)
+            want = a.get("when", "true")         # true=맞으면 진행 / false=틀리면 진행
+            cond_ok = ok if want == "true" else (not ok)
+            if not cond_ok:
+                return int(a.get("skip", 1))
         elif t == "broadcast":                   # 📡 여러 방: 각 방 클릭 → 문구 입력 → 엔터
             self._broadcast(a, stop)
         # "wait" 는 delay 로 이미 기다렸으니 할 일 없음
@@ -207,24 +239,30 @@ class Engine:
                 return
             hrsleep(0.4)
 
+    def _sub(self, text):
+        """값 치환({번호}·{날짜}·변수·목록). ctx 없으면 원문."""
+        if self.ctx is not None:
+            try:
+                return self.ctx.substitute(text)
+            except Exception:
+                return text
+        return text
+
     def _broadcast(self, a, stop=None):
-        targets = a.get("targets", [])
-        text = a.get("text", "")
+        items = TG.resolve_broadcast(self.mset, a)   # 저장 대상(target_ids) + 옛 인라인 둘 다
+        text = self._sub(a.get("text", ""))
         cps = a.get("cps", 0)
         gap = max(0, a.get("gap_ms", 150)) / 1000.0
         do_enter = a.get("enter", True)
         pre = max(0, a.get("focus_ms", 120)) / 1000.0   # 클릭 후 입력 전 대기(창 포커스)
-        for pt in targets:
+        for kind, val in items:
             if stop and stop.is_set():
                 return
-            if isinstance(pt, dict) and pt.get("win"):     # 창 제목으로 그 방 띄우기
-                self.window_op({"op": "activate", "title": pt["win"]})
+            if kind == "win":                          # 창 제목으로 그 방 띄우기
+                self.window_op({"op": "activate", "title": val})
                 hrsleep(pre)
             else:
-                try:
-                    x, y = pt
-                except Exception:
-                    continue
+                x, y = val
                 self.click(int(x), int(y), "left", 1, 0)   # 그 방 입력칸 클릭
                 hrsleep(pre)
             if stop and stop.is_set():      # 정지 누르면 엔터·입력 더 안 나가게

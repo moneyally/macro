@@ -54,6 +54,20 @@ class Broadcast(tk.Toplevel):
         W.RoundButton(wrow, "🪟 창 추가", self._add_win, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
                       width=86, height=30, radius=10, font=T.font(9, "bold")).pack(side="left", padx=4)
 
+        # 📚 저장 대상(🔧 변수·대상에서 만든 것)에서 바로 넣기
+        saved = getattr(self.app.set, "targets", None) or []
+        if saved:
+            from tkinter import ttk
+            srow = tk.Frame(tc.body, bg=T.COLORS["surface"])
+            srow.pack(fill="x", pady=(6, 0))
+            W.label(srow, "저장 대상:").pack(side="left", padx=(0, 4))
+            self._saved = saved
+            self.sv = tk.StringVar()
+            ttk.Combobox(srow, textvariable=self.sv, state="readonly", width=16,
+                         values=[t.get("name", "") for t in saved]).pack(side="left")
+            W.RoundButton(srow, "➕ 넣기", self._add_saved, bg=T.COLORS["slate"], hover=T.COLORS["slateDk"],
+                          width=68, height=30, radius=10, font=T.font(9, "bold")).pack(side="left", padx=4)
+
         # 문구
         mcard = W.Card(self, "② 공통 문구")
         mcard.pack(fill="x", padx=14, pady=(10, 0))
@@ -105,6 +119,17 @@ class Broadcast(tk.Toplevel):
         self.targets.append({"win": t})
         self.wtitle.set("")
         self._refresh()
+
+    def _add_saved(self):
+        name = self.sv.get().strip()
+        for t in getattr(self, "_saved", []):
+            if t.get("name") == name:
+                if t.get("kind") == "window":
+                    self.targets.append({"win": t.get("title", "")})
+                else:
+                    self.targets.append([int(t.get("x", 0)), int(t.get("y", 0))])
+                self._refresh()
+                return
 
     def _del(self):
         s = self.lb.curselection()

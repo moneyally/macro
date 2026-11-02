@@ -118,6 +118,142 @@ def do(op, title, x=None, y=None, w=None, h=None):
     return r
 
 
+def exists(title):
+    """제목 일부가 들어간 창이 지금 있나?"""
+    t = (title or "").strip().lower()
+    if not t:
+        return False
+    try:
+        import pygetwindow as gw
+        for w in gw.getAllWindows():
+            if w.title and t in w.title.lower():
+                return True
+        return False
+    except Exception:
+        pass
+    if not _IS_WIN:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u32 = ctypes.windll.user32
+        u32.IsWindowVisible.argtypes = [wintypes.HWND]
+        u32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        hit = []
+        EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def _cb(hwnd, _l):
+            if u32.IsWindowVisible(hwnd):
+                n = u32.GetWindowTextLengthW(hwnd)
+                if n > 0:
+                    buf = ctypes.create_unicode_buffer(n + 1)
+                    u32.GetWindowTextW(hwnd, buf, n + 1)
+                    if buf.value and t in buf.value.lower():
+                        hit.append(True)
+                        return False
+            return True
+
+        u32.EnumWindows(EnumWindowsProc(_cb), 0)
+        return bool(hit)
+    except Exception:
+        return False
+
+
+def active_title():
+    """지금 맨 앞(활성) 창 제목. 못 가져오면 ''."""
+    try:
+        import pygetwindow as gw
+        w = gw.getActiveWindow()
+        return (w.title or "") if w else ""
+    except Exception:
+        pass
+    if not _IS_WIN:
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u32 = ctypes.windll.user32
+        u32.GetForegroundWindow.restype = wintypes.HWND
+        u32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+        hwnd = u32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        n = u32.GetWindowTextLengthW(hwnd)
+        buf = ctypes.create_unicode_buffer(n + 1)
+        u32.GetWindowTextW(hwnd, buf, n + 1)
+        return buf.value or ""
+    except Exception:
+        return ""
+
+
+def client_rect(title):
+    """제목 일부로 찾은 창의 '안쪽(클라이언트) 영역'을 화면좌표 (x, y, w, h) 로.
+    창 기준 상대좌표 → 화면좌표 변환에 씀. 못 찾으면 None."""
+    if not _IS_WIN:
+        # 비윈도우: pygetwindow 로 바깥 사각형이라도
+        try:
+            w = _find_pgw(title)
+            if w is None:
+                return None
+            return (int(w.left), int(w.top), int(w.width), int(w.height))
+        except Exception:
+            return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+        u32 = ctypes.windll.user32
+        u32.IsWindowVisible.argtypes = [wintypes.HWND]
+        u32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+        u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+
+        hwnd = None
+        t = (title or "").strip().lower()
+        found = []
+        EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def _cb(h, _l):
+            if u32.IsWindowVisible(h):
+                n = u32.GetWindowTextLengthW(h)
+                if n > 0:
+                    buf = ctypes.create_unicode_buffer(n + 1)
+                    u32.GetWindowTextW(h, buf, n + 1)
+                    if buf.value and t in buf.value.lower():
+                        found.append(h)
+                        return False
+            return True
+
+        u32.EnumWindows(EnumWindowsProc(_cb), 0)
+        if not found:
+            return None
+        hwnd = found[0]
+
+        class RECT(ctypes.Structure):
+            _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
+                        ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
+
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+        u32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
+        u32.GetClientRect.restype = wintypes.BOOL
+        u32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
+        u32.ClientToScreen.restype = wintypes.BOOL
+        rc = RECT()
+        if not u32.GetClientRect(hwnd, ctypes.byref(rc)):
+            return None
+        pt = POINT(0, 0)
+        u32.ClientToScreen(hwnd, ctypes.byref(pt))   # 클라이언트 (0,0) → 화면좌표
+        w = rc.right - rc.left
+        h = rc.bottom - rc.top
+        if w <= 0 or h <= 0:
+            return None                              # 최소화 등
+        return (int(pt.x), int(pt.y), int(w), int(h))
+    except Exception:
+        return None
+
+
 def list_titles(limit=60):
     """지금 열린 창 제목들 (UI 에서 고르게)."""
     out = []

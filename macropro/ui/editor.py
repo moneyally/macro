@@ -16,11 +16,12 @@ TYPES = [("click", "🖱 클릭"), ("type", "✎ 문구 입력"), ("paste", "�
          ("hotkey", "🔑 단축키"), ("move", "➡ 이동"), ("wait", "⏱ 대기"),
          ("scroll", "🖲 스크롤"), ("image", "🖼 이미지 보이면 클릭"),
          ("wait_image", "⏳ 이미지 뜰 때까지"), ("if_image", "🔀 이미지 조건"),
-         ("window", "🪟 창 조절")]
+         ("ifcond", "🧠 조건(값·창·픽셀)"), ("wclick", "🪟 창 기준 클릭"),
+         ("increment", "🔢 변수 +1"), ("window", "🪟 창 조절")]
 LABELS = {
     "click": ("좌표 x,y", "버튼 left/right/middle", "횟수 (,흔들기px)"),
-    "type": ("문구 (타이핑할 글)", "초당 글자수(0=즉시)", "앞 대기(ms)"),
-    "paste": ("붙여넣을 문구 (복사→Ctrl+V)", "앞 대기(ms)", "—"),
+    "type": ("문구 (타이핑할 글, {번호}·{날짜}·변수 가능)", "초당 글자수(0=즉시)", "앞 대기(ms)"),
+    "paste": ("붙여넣을 문구 ({번호}·변수 가능)", "앞 대기(ms)", "—"),
     "hotkey": ("조합 ctrl+c / alt+tab", "앞 대기(ms)", "—"),
     "move": ("좌표 x,y", "걸리는 시간(초,0=순간)", "앞 대기(ms)"),
     "wait": ("대기 밀리초(ms)", "—", "—"),
@@ -28,6 +29,9 @@ LABELS = {
     "image": ("이미지 경로(.png)", "정확도 0~1", "버튼 left/right"),
     "wait_image": ("이미지 경로(.png)", "정확도 0~1", "최대 대기(초)"),
     "if_image": ("이미지 경로(.png)", "있을때 found / 없을때 notfound", "조건 안 맞으면 건너뛸 동작 수"),
+    "ifcond": ("종류 window/active_title/clipboard/pixel/image", "비교 exists/contains/near/equals", "기준값 (pixel 은 #RRGGBB@x,y)"),
+    "wclick": ("창 제목(일부)", "가로 비율 0~1 (예 0.5)", "세로 비율 0~1"),
+    "increment": ("변수 이름 (예 번호)", "증가값 (기본 1)", "—"),
     "window": ("창 제목(일부만)", "activate/min/max/close/move/resize", "move=x,y  resize=w,h"),
 }
 
@@ -165,6 +169,22 @@ class Editor(tk.Toplevel):
         v1, v2, v3 = self.v1.get().strip(), self.v2.get().strip(), self.v3.get().strip()
         pre = (float(v3 or 0) / 1000.0) if t in ("type", "move") else \
               (float(v2 or 0) / 1000.0) if t in ("hotkey", "scroll", "paste") else 0.0
+        if t == "increment":
+            return {"type": "increment", "delay": 0.0, "name": v1, "step": int(float(v2 or 1))}
+        if t == "wclick":
+            return {"type": "click", "delay": 0.0, "coordinate_mode": "window_relative",
+                    "window": v1, "x": float(v2 or 0.5), "y": float(v3 or 0.5),
+                    "button": "left", "count": 1}
+        if t == "ifcond":
+            src = (v1 or "window").lower()
+            cond = {"source": src, "operator": (v2 or "exists"), "value": v3}
+            if src == "pixel" and "@" in v3:
+                val, xy = v3.split("@", 1)
+                cond["value"] = val.strip()
+                if "," in xy:
+                    xx, yy = (xy.split(",") + ["0", "0"])[:2]
+                    cond["x"], cond["y"] = int(xx), int(yy)
+            return {"type": "ifcond", "delay": 0.0, "condition": cond, "when": "true", "skip": 1}
         if t == "paste":
             return {"type": "paste", "delay": pre, "text": self.v1.get()}
         if t == "wait_image":

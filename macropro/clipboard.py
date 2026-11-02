@@ -13,7 +13,7 @@ _IS_WIN = sys.platform.startswith("win")
 def set_clipboard(text):
     """클립보드에 유니코드 글 넣기. 성공하면 True."""
     if not _IS_WIN:
-        return _set_tk(text)
+        return False     # 비윈도우: 클립보드 안 씀(재생 스레드에서 Tk 만들면 위험) → 호출부가 타이핑으로 폴백
     try:
         import ctypes
         from ctypes import wintypes
@@ -61,16 +61,35 @@ def set_clipboard(text):
         return False
 
 
-def _set_tk(text):
-    """비윈도우 폴백 — tkinter 클립보드 (테스트/리눅스용)."""
+def get_clipboard():
+    """클립보드의 글(유니코드). 못 읽으면 ''."""
+    if not _IS_WIN:
+        return ""        # 비윈도우: 재생 스레드에서 Tk 만들지 않음
     try:
-        import tkinter as tk
-        r = tk.Tk()
-        r.withdraw()
-        r.clipboard_clear()
-        r.clipboard_append(text)
-        r.update()
-        r.destroy()
-        return True
+        import ctypes
+        from ctypes import wintypes
+        CF_UNICODETEXT = 13
+        u32 = ctypes.windll.user32
+        k32 = ctypes.windll.kernel32
+        k32.GlobalLock.restype = wintypes.LPVOID
+        k32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        k32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        u32.GetClipboardData.restype = wintypes.HANDLE
+        u32.GetClipboardData.argtypes = [wintypes.UINT]
+        if not u32.OpenClipboard(None):
+            return ""
+        try:
+            h = u32.GetClipboardData(CF_UNICODETEXT)
+            if not h:
+                return ""
+            p = k32.GlobalLock(h)
+            if not p:
+                return ""
+            try:
+                return ctypes.c_wchar_p(p).value or ""
+            finally:
+                k32.GlobalUnlock(h)
+        finally:
+            u32.CloseClipboard()
     except Exception:
-        return False
+        return ""

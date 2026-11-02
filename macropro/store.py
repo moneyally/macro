@@ -57,7 +57,55 @@ def _db():
     con = sqlite3.connect(os.path.join(data_dir(), "history.db"), timeout=5)
     con.execute("CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY AUTOINCREMENT, "
                 "name TEXT, loops INTEGER, ts INTEGER)")
+    # 상세 실행 기록: 실행마다 ID 부여, 시작·종료·진행·상태
+    con.execute("CREATE TABLE IF NOT EXISTS run_log(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "name TEXT, started INTEGER, ended INTEGER, loops INTEGER, "
+                "total INTEGER, done INTEGER, status TEXT, note TEXT)")
     return con
+
+
+def start_run(name, total=0):
+    """실행 시작 기록 → run_id. 실패하면 None (기록 실패해도 실행은 계속)."""
+    try:
+        con = _db()
+        try:
+            cur = con.execute("INSERT INTO run_log(name, started, status, total, done, loops) "
+                              "VALUES(?,?,?,?,0,0)", (name, int(time.time()), "running", int(total)))
+            con.commit()
+            return cur.lastrowid
+        finally:
+            con.close()
+    except Exception:
+        return None
+
+
+def finish_run(run_id, loops=0, done=0, status="done", note=""):
+    if not run_id:
+        return
+    try:
+        con = _db()
+        try:
+            con.execute("UPDATE run_log SET ended=?, loops=?, done=?, status=?, note=? WHERE id=?",
+                        (int(time.time()), int(loops), int(done), status, (note or "")[:300], run_id))
+            # 상세 기록도 최근 2000개만
+            con.execute("DELETE FROM run_log WHERE id < (SELECT MAX(id) FROM run_log) - 2000")
+            con.commit()
+        finally:
+            con.close()
+    except Exception:
+        pass
+
+
+def recent_run_log(n=200):
+    try:
+        con = _db()
+        try:
+            return con.execute("SELECT name, started, ended, loops, total, done, status "
+                               "FROM run_log ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+        finally:
+            con.close()
+    except Exception:
+        return []
 
 
 def log_run(name, loops):
